@@ -190,7 +190,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
-    text = update.message.text.strip()
+ text = update.message.text.strip()
 
     # MENU TUGMALARI
     if text == "🛠 Usta chaqirish":
