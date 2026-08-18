@@ -206,7 +206,44 @@ NOW(),
 # =========================================================
 # DATABASE - CREATE ORDER
 # =========================================================
+async def db_save_customer(
+    telegram_id,
+    name=None,
+    phone=None,
+    username=None
+):
+    if not db_pool:
+        return
 
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO customers (
+                    telegram_id,
+                    name,
+                    phone,
+                    username,
+                    last_order_at
+                )
+                VALUES ($1, $2, $3, $4, NOW())
+                ON CONFLICT (telegram_id)
+                DO UPDATE SET
+                    name = COALESCE($2, customers.name),
+                    phone = COALESCE($3, customers.phone),
+                    username = COALESCE($4, customers.username),
+                    last_order_at = NOW()
+                """,
+                telegram_id,
+                name,
+                phone,
+                username
+            )
+
+    except Exception:
+        logger.exception(
+            "Mijozni saqlashda xato!"
+        )
 async def db_create_order(
     customer_id,
     customer_name,
