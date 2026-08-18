@@ -2693,9 +2693,8 @@ async def run_bot(
     try:
 
         await application.updater.start_polling(
-
-            allowed_updates=
-            Update.ALL_TYPES
+          allowed_updates=Update.ALL_TYPES,
+          drop_pending_updates=True
         )
 
 
