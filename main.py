@@ -106,7 +106,7 @@ def main_menu():
 
 
 # =========================================================
-# BUYURTMA HOLATLARI
+# BUYURTMALAR
 # =========================================================
 
 user_orders = {}
@@ -128,16 +128,12 @@ async def start(
     if not update.message:
         return
 
-    text = (
+    await update.message.reply_text(
         "👋 Assalomu alaykum!\n\n"
         "🏠 USTA 24 xizmatiga xush kelibsiz!\n\n"
         "🔧 Uy va ofis uchun ustalar xizmatlari.\n"
         "📍 Andijon shahri\n\n"
-        "Kerakli xizmatni tanlang:"
-    )
-
-    await update.message.reply_text(
-        text,
+        "Kerakli xizmatni tanlang:",
         reply_markup=main_menu()
     )
 
@@ -160,8 +156,7 @@ async def chat_id_command(
         return
 
     await update.message.reply_text(
-        f"🆔 Chat ID:\n"
-        f"{chat.id}\n\n"
+        f"🆔 Chat ID: {chat.id}\n\n"
         f"📌 Chat turi: {chat.type}\n"
         f"📌 Nomi: {chat.title or '-'}"
     )
@@ -179,7 +174,7 @@ async def services(
     if not update.message:
         return
 
-    text = (
+    await update.message.reply_text(
         "🛠 USTA 24 XIZMATLARI\n\n"
 
         "🪑 Mebel yig‘ish\n"
@@ -195,14 +190,10 @@ async def services(
         "🔩 Santexnika ishlari\n"
         "⚡ Elektr ishlari\n"
         "🔥 Payvandlash ishlari\n"
-        "🔨 Boshqa uy xizmatlari\n\n"
+        "🔨 Boshqa xizmat\n\n"
 
         "📞 Buyurtma berish uchun "
-        "«🛠 Usta chaqirish» tugmasini bosing."
-    )
-
-    await update.message.reply_text(
-        text,
+        "«🛠 Usta chaqirish» tugmasini bosing.",
         reply_markup=main_menu()
     )
 
@@ -219,16 +210,12 @@ async def contact(
     if not update.message:
         return
 
-    text = (
+    await update.message.reply_text(
         "📞 USTA 24\n\n"
         "☎️ Telefon: +998 77 069 00 03\n\n"
         "📍 Andijon shahri\n\n"
         "🛠 Usta chaqirish uchun "
-        "«🛠 Usta chaqirish» tugmasini bosing."
-    )
-
-    await update.message.reply_text(
-        text,
+        "«🛠 Usta chaqirish» tugmasini bosing.",
         reply_markup=main_menu()
     )
 
@@ -258,7 +245,7 @@ async def start_order(
 
 
 # =========================================================
-# BUYURTMA QABUL QILISH
+# ASOSIY XABAR HANDLER
 # =========================================================
 
 async def handle_message(
@@ -349,7 +336,6 @@ async def handle_message(
             return
 
         order["name"] = text
-
         order["step"] = "phone"
 
 
@@ -382,9 +368,7 @@ async def handle_message(
 
         if update.message.contact:
 
-            phone = (
-                update.message.contact.phone_number
-            )
+            phone = update.message.contact.phone_number
 
         else:
 
@@ -401,7 +385,6 @@ async def handle_message(
 
 
         order["phone"] = phone
-
         order["step"] = "service"
 
 
@@ -442,7 +425,6 @@ async def handle_message(
 
 
         order["service"] = text
-
         order["step"] = "address"
 
 
@@ -471,7 +453,6 @@ async def handle_message(
 
 
         order["address"] = text
-
         order["step"] = "description"
 
 
@@ -544,7 +525,7 @@ async def handle_message(
 
 
 # =========================================================
-# USTALAR GURUHIGA YUBORISH
+# GURUHGA BUYURTMA YUBORISH
 # =========================================================
 
 async def send_order_to_masters(
@@ -561,11 +542,13 @@ async def send_order_to_masters(
 
     user = update.effective_user
 
-    username = (
-        f"@{user.username}"
-        if user.username
-        else "username yo‘q"
-    )
+    if user.username:
+
+        username = f"@{user.username}"
+
+    else:
+
+        username = "username yo‘q"
 
 
     orders[order_id] = {
@@ -580,7 +563,7 @@ async def send_order_to_masters(
     message = (
         "🆕 YANGI BUYURTMA\n\n"
 
-        f"🔢 Буюртма №{order_id}\n\n"
+        f"🔢 Буюртма: #{order_id}\n\n"
 
         f"👤 Мижоз: "
         f"{order.get('name', '-')}\n"
@@ -601,8 +584,8 @@ async def send_order_to_masters(
 
         f"🆔 User ID: {user.id}\n\n"
 
-        "🚨 Буюртмани қабул қилиш учун "
-        "қуйидаги тугмадан фойдаланинг."
+        "🚨 Уста буюртмани қабул қилиш учун "
+        "қуйидаги тугмани босинг."
     )
 
 
@@ -613,6 +596,7 @@ async def send_order_to_masters(
                     "✅ Қабул қилиш",
                     callback_data=f"accept:{order_id}"
                 ),
+
                 InlineKeyboardButton(
                     "❌ Рад этиш",
                     callback_data=f"reject:{order_id}"
@@ -705,11 +689,16 @@ async def order_callback(
 
     master = query.from_user
 
-    master_name = (
-        f"@{master.username}"
-        if master.username
-        else master.full_name
-    )
+    if master.username:
+
+        master_name = f"@{master.username}"
+
+    else:
+
+        master_name = master.full_name
+
+
+    order_info = order_data["order"]
 
 
     # =====================================================
@@ -721,7 +710,7 @@ async def order_callback(
         if order_data["status"] != "open":
 
             await query.answer(
-                "⚠️ Бу буюртмани бошқа уста қабул қилган.",
+                "⚠️ Bu buyurtmani boshqa usta qabul qilgan.",
                 show_alert=True
             )
 
@@ -735,33 +724,34 @@ async def order_callback(
         order_data["master_name"] = master_name
 
 
-        order_info = order_data["order"]
+        # =================================================
+        # GURUHDA KO‘RSATISH
+        # =================================================
 
+        group_text = (
+            "✅ BUYURTMA QABUL QILINDI\n\n"
 
-        accepted_text = (
-            "✅ БУЮРТМА ҚАБУЛ ҚИЛИНДИ\n\n"
+            f"🔢 Buyurtma: #{order_id}\n\n"
 
-            f"🔢 Буюртма №{order_id}\n\n"
-
-            f"👤 Мижоз: "
+            f"👤 Mijoz: "
             f"{order_info.get('name', '-')}\n"
 
-            f"📞 Телефон: "
+            f"📞 Telefon: "
             f"{order_info.get('phone', '-')}\n"
 
-            f"🛠 Хизмат: "
+            f"🛠 Xizmat: "
             f"{order_info.get('service', '-')}\n"
 
-            f"📍 Манзил: "
+            f"📍 Manzil: "
             f"{order_info.get('address', '-')}\n"
 
-            f"📝 Изоҳ: "
+            f"📝 Izoh: "
             f"{order_info.get('description', '-')}\n\n"
 
-            f"👨‍🔧 Қабул қилган уста: "
+            f"👨‍🔧 Qabul qilgan usta: "
             f"{master_name}\n"
 
-            f"🆔 Уста ID: {master.id}\n\n"
+            f"🆔 Usta ID: {master.id}\n\n"
 
             "☎️ USTA 24\n"
             "+998 77 069 00 03"
@@ -771,13 +761,57 @@ async def order_callback(
         try:
 
             await query.edit_message_text(
-                text=accepted_text
+                text=group_text
             )
 
         except Exception:
 
             logger.exception(
-                "Guruh xabarini yangilashda xato"
+                "Guruh xabarini o‘zgartirishda xato"
+            )
+
+
+        # =================================================
+        # USTAGA SHAXSIY XABAR
+        # =================================================
+
+        master_text = (
+            "✅ BUYURTMA SIZGA BIRIKTIRILDI\n\n"
+
+            f"🔢 Buyurtma: #{order_id}\n\n"
+
+            f"👤 Mijoz: "
+            f"{order_info.get('name', '-')}\n"
+
+            f"📞 Telefon: "
+            f"{order_info.get('phone', '-')}\n\n"
+
+            f"🛠 Xizmat: "
+            f"{order_info.get('service', '-')}\n"
+
+            f"📍 Manzil: "
+            f"{order_info.get('address', '-')}\n\n"
+
+            f"📝 Izoh:\n"
+            f"{order_info.get('description', '-')}\n\n"
+
+            "☎️ USTA 24\n"
+            "+998 77 069 00 03"
+        )
+
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=master.id,
+                text=master_text
+            )
+
+        except Exception:
+
+            logger.warning(
+                "Ustaga shaxsiy xabar yuborilmadi.",
+                exc_info=True
             )
 
 
@@ -785,34 +819,35 @@ async def order_callback(
         # MIJOZGA XABAR
         # =================================================
 
+        customer_text = (
+            f"✅ Буюртмангиз №{order_id} қабул қилинди.\n\n"
+
+            f"👨‍🔧 Уста: {master_name}\n\n"
+
+            "Тез орада уста сиз билан боғланади.\n\n"
+
+            "☎️ USTA 24\n"
+            "+998 77 069 00 03"
+        )
+
+
         try:
 
             await context.bot.send_message(
                 chat_id=order_data["customer_id"],
-                text=(
-                    f"✅ Буюртмангиз №{order_id} "
-                    "қабул қилинди.\n\n"
-
-                    f"👨‍🔧 Уста: {master_name}\n\n"
-
-                    "Тез орада уста сиз билан "
-                    "боғланади.\n\n"
-
-                    "☎️ USTA 24\n"
-                    "+998 77 069 00 03"
-                )
+                text=customer_text
             )
 
         except Exception:
 
             logger.warning(
-                "Mijozga xabar yuborib bo‘lmadi.",
+                "Mijozga xabar yuborilmadi.",
                 exc_info=True
             )
 
 
         await query.answer(
-            "✅ Буюртма сизга бириктирилди!"
+            "✅ Buyurtma sizga biriktirildi!"
         )
 
         return
@@ -827,7 +862,7 @@ async def order_callback(
         if order_data["status"] != "open":
 
             await query.answer(
-                "⚠️ Бу буюртма аллақачон қабул қилинган.",
+                "⚠️ Bu buyurtma allaqachon qabul qilingan.",
                 show_alert=True
             )
 
@@ -835,17 +870,26 @@ async def order_callback(
 
 
         await query.answer(
-            "❌ Буюртма рад этилди."
+            "❌ Buyurtma rad etildi."
         )
 
 
-        await context.bot.send_message(
-            chat_id=MASTERS_GROUP_ID,
-            text=(
-                f"❌ Буюртма №{order_id} "
-                f"{master_name} томонидан рад этилди."
+        try:
+
+            await context.bot.send_message(
+                chat_id=MASTERS_GROUP_ID,
+                text=(
+                    f"❌ Buyurtma #{order_id} "
+                    f"{master_name} tomonidan rad etildi."
+                )
             )
-        )
+
+        except Exception:
+
+            logger.warning(
+                "Rad etish xabarida xato.",
+                exc_info=True
+            )
 
         return
 
@@ -887,31 +931,44 @@ async def run_bot(
             "Telegram polling ishga tushdi."
         )
 
+
         while True:
 
             await asyncio.sleep(
                 3600
             )
 
+
     finally:
 
         try:
+
             await application.updater.stop()
+
         except Exception:
+
             logger.exception(
                 "Updater stop xatosi"
             )
 
+
         try:
+
             await application.stop()
+
         except Exception:
+
             logger.exception(
                 "Application stop xatosi"
             )
 
+
         try:
+
             await application.shutdown()
+
         except Exception:
+
             logger.exception(
                 "Application shutdown xatosi"
             )
@@ -935,6 +992,8 @@ def main():
     )
 
 
+    # /start
+
     application.add_handler(
         CommandHandler(
             "start",
@@ -942,6 +1001,8 @@ def main():
         )
     )
 
+
+    # /id
 
     application.add_handler(
         CommandHandler(
@@ -951,12 +1012,16 @@ def main():
     )
 
 
+    # ✅ / ❌ tugmalar
+
     application.add_handler(
         CallbackQueryHandler(
             order_callback
         )
     )
 
+
+    # Telefon
 
     application.add_handler(
         MessageHandler(
@@ -966,6 +1031,8 @@ def main():
     )
 
 
+    # Oddiy matn
+
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -974,10 +1041,16 @@ def main():
     )
 
 
+    # Xatolar
+
     application.add_error_handler(
         error_handler
     )
 
+
+    # =====================================================
+    # FLASK
+    # =====================================================
 
     flask_thread = Thread(
         target=run_flask,
@@ -991,10 +1064,15 @@ def main():
         "Flask server ishga tushdi."
     )
 
+
     logger.info(
         "Telegram bot ishga tushdi."
     )
 
+
+    # =====================================================
+    # TELEGRAM
+    # =====================================================
 
     asyncio.run(
         run_bot(application)
@@ -1006,4 +1084,5 @@ def main():
 # =========================================================
 
 if __name__ == "__main__":
+
     main()
