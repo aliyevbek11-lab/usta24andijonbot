@@ -382,7 +382,13 @@ async def send_order_to_masters(
         text=message
     )
 
-
+async def show_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat:
+        print(
+            f"CHAT ID: {update.effective_chat.id} | "
+            f"CHAT TYPE: {update.effective_chat.type} | "
+            f"CHAT TITLE: {update.effective_chat.title}"
+        )
 # =========================
 # ERROR
 # =========================
@@ -411,7 +417,17 @@ def main():
         .token(TOKEN)
         .build()
     )
-
+application.add_handler(
+    MessageHandler(
+        filters.ALL,
+        show_chat_id
+    )
+) application.add_handler(
+    MessageHandler(
+        filters.ALL,
+        show_chat_id
+    )
+)
     application.add_handler(
         CommandHandler("start", start)
     )
