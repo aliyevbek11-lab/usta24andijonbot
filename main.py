@@ -9,11 +9,6 @@ from telegram import (
     Update,
     ReplyKeyboardMarkup,
     KeyboardButton,
-) 
-from telegram import (
-    Update,
-    
-    KeyboardButton,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
@@ -22,6 +17,7 @@ from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -34,14 +30,11 @@ from telegram.ext import (
 TOKEN = os.getenv("BOT_TOKEN")
 MASTERS_GROUP_ID = os.getenv("MASTERS_GROUP_ID")
 
-
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN topilmadi!")
 
-
 if not MASTERS_GROUP_ID:
     raise RuntimeError("MASTERS_GROUP_ID topilmadi!")
-
 
 try:
     MASTERS_GROUP_ID = int(MASTERS_GROUP_ID.strip())
@@ -56,12 +49,7 @@ except ValueError:
 # =========================================================
 
 logging.basicConfig(
-    format=(
-        "%(asctime)s - "
-        "%(name)s - "
-        "%(levelname)s - "
-        "%(message)s"
-    ),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 
@@ -118,10 +106,14 @@ def main_menu():
 
 
 # =========================================================
-# BUYURTMA HOLATI
+# BUYURTMA HOLATLARI
 # =========================================================
 
 user_orders = {}
+
+orders = {}
+
+order_counter = 0
 
 
 # =========================================================
@@ -284,7 +276,6 @@ async def handle_message(
 
     user_id = user.id
 
-    # Kontakt yuborilganda message.text None bo‘ladi
     text = (
         update.message.text or ""
     ).strip()
@@ -356,7 +347,6 @@ async def handle_message(
             )
 
             return
-
 
         order["name"] = text
 
@@ -515,13 +505,9 @@ async def handle_message(
         order["description"] = text
 
 
-        # -------------------------------------------------
-        # USTALAR GURUHIGA YUBORISH
-        # -------------------------------------------------
-
         try:
 
-            await send_order_to_masters(
+            order_id = await send_order_to_masters(
                 update,
                 context,
                 order
@@ -536,19 +522,18 @@ async def handle_message(
             await update.message.reply_text(
                 "❌ Буюртмани усталар гуруҳига "
                 "юборишда хатолик юз берди.\n\n"
-                "Илтимос, диспетчер билан боғланинг:\n"
                 "☎️ +998 77 069 00 03"
             )
 
             return
 
 
-        # Buyurtma muvaffaqiyatli yuborilgandan keyin
         del user_orders[user_id]
 
 
         await update.message.reply_text(
-            "✅ Буюртмангиз қабул қилинди!\n\n"
+            f"✅ Буюртмангиз қабул қилинди!\n\n"
+            f"🔢 Буюртма №{order_id}\n\n"
             "👨‍🔧 Буюртма усталар гуруҳига юборилди.\n"
             "📞 Тез орада сиз билан боғланишади.\n\n"
             "☎️ USTA 24: +998 77 069 00 03",
@@ -568,11 +553,13 @@ async def send_order_to_masters(
     order: dict
 ):
 
+    global order_counter
+
+    order_counter += 1
+
+    order_id = order_counter
+
     user = update.effective_user
-
-    if not user:
-        return
-
 
     username = (
         f"@{user.username}"
@@ -581,10 +568,19 @@ async def send_order_to_masters(
     )
 
 
+    orders[order_id] = {
+        "customer_id": user.id,
+        "status": "open",
+        "master_id": None,
+        "master_name": None,
+        "order": order,
+    }
+
+
     message = (
         "🆕 YANGI BUYURTMA\n\n"
 
-        f"🔢 Буюртма: #{user.id}\n\n"
+        f"🔢 Буюртма №{order_id}\n\n"
 
         f"👤 Мижоз: "
         f"{order.get('name', '-')}\n"
@@ -605,24 +601,253 @@ async def send_order_to_masters(
 
         f"🆔 User ID: {user.id}\n\n"
 
-        "🚨 Уста буюртмани қабул қилиш учун "
-        "диспетчер билан боғлансин.\n\n"
+        "🚨 Буюртмани қабул қилиш учун "
+        "қуйидаги тугмадан фойдаланинг."
+    )
 
-        "☎️ USTA 24\n"
-        "+998 77 069 00 03"
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Қабул қилиш",
+                    callback_data=f"accept:{order_id}"
+                ),
+                InlineKeyboardButton(
+                    "❌ Рад этиш",
+                    callback_data=f"reject:{order_id}"
+                ),
+            ]
+        ]
+    )
+
+
+    sent_message = await context.bot.send_message(
+        chat_id=MASTERS_GROUP_ID,
+        text=message,
+        reply_markup=keyboard
+    )
+
+
+    orders[order_id]["message_id"] = (
+        sent_message.message_id
     )
 
 
     logger.info(
-        "Buyurtmani guruhga yuborish: %s",
-        MASTERS_GROUP_ID
+        "Buyurtma #%s guruhga yuborildi.",
+        order_id
     )
 
 
-    await context.bot.send_message(
-        chat_id=MASTERS_GROUP_ID,
-        text=message
+    return order_id
+
+
+# =========================================================
+# QABUL QILISH / RAD ETISH
+# =========================================================
+
+async def order_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    if not query:
+        return
+
+
+    data = query.data or ""
+
+
+    if ":" not in data:
+
+        await query.answer(
+            "❌ Noto‘g‘ri buyurtma.",
+            show_alert=True
+        )
+
+        return
+
+
+    action, order_id_text = data.split(
+        ":",
+        1
     )
+
+
+    try:
+
+        order_id = int(order_id_text)
+
+    except ValueError:
+
+        await query.answer(
+            "❌ Buyurtma raqami noto‘g‘ri.",
+            show_alert=True
+        )
+
+        return
+
+
+    if order_id not in orders:
+
+        await query.answer(
+            "❌ Buyurtma topilmadi.",
+            show_alert=True
+        )
+
+        return
+
+
+    order_data = orders[order_id]
+
+    master = query.from_user
+
+    master_name = (
+        f"@{master.username}"
+        if master.username
+        else master.full_name
+    )
+
+
+    # =====================================================
+    # QABUL QILISH
+    # =====================================================
+
+    if action == "accept":
+
+        if order_data["status"] != "open":
+
+            await query.answer(
+                "⚠️ Бу буюртмани бошқа уста қабул қилган.",
+                show_alert=True
+            )
+
+            return
+
+
+        order_data["status"] = "accepted"
+
+        order_data["master_id"] = master.id
+
+        order_data["master_name"] = master_name
+
+
+        order_info = order_data["order"]
+
+
+        accepted_text = (
+            "✅ БУЮРТМА ҚАБУЛ ҚИЛИНДИ\n\n"
+
+            f"🔢 Буюртма №{order_id}\n\n"
+
+            f"👤 Мижоз: "
+            f"{order_info.get('name', '-')}\n"
+
+            f"📞 Телефон: "
+            f"{order_info.get('phone', '-')}\n"
+
+            f"🛠 Хизмат: "
+            f"{order_info.get('service', '-')}\n"
+
+            f"📍 Манзил: "
+            f"{order_info.get('address', '-')}\n"
+
+            f"📝 Изоҳ: "
+            f"{order_info.get('description', '-')}\n\n"
+
+            f"👨‍🔧 Қабул қилган уста: "
+            f"{master_name}\n"
+
+            f"🆔 Уста ID: {master.id}\n\n"
+
+            "☎️ USTA 24\n"
+            "+998 77 069 00 03"
+        )
+
+
+        try:
+
+            await query.edit_message_text(
+                text=accepted_text
+            )
+
+        except Exception:
+
+            logger.exception(
+                "Guruh xabarini yangilashda xato"
+            )
+
+
+        # =================================================
+        # MIJOZGA XABAR
+        # =================================================
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=order_data["customer_id"],
+                text=(
+                    f"✅ Буюртмангиз №{order_id} "
+                    "қабул қилинди.\n\n"
+
+                    f"👨‍🔧 Уста: {master_name}\n\n"
+
+                    "Тез орада уста сиз билан "
+                    "боғланади.\n\n"
+
+                    "☎️ USTA 24\n"
+                    "+998 77 069 00 03"
+                )
+            )
+
+        except Exception:
+
+            logger.warning(
+                "Mijozga xabar yuborib bo‘lmadi.",
+                exc_info=True
+            )
+
+
+        await query.answer(
+            "✅ Буюртма сизга бириктирилди!"
+        )
+
+        return
+
+
+    # =====================================================
+    # RAD ETISH
+    # =====================================================
+
+    if action == "reject":
+
+        if order_data["status"] != "open":
+
+            await query.answer(
+                "⚠️ Бу буюртма аллақачон қабул қилинган.",
+                show_alert=True
+            )
+
+            return
+
+
+        await query.answer(
+            "❌ Буюртма рад этилди."
+        )
+
+
+        await context.bot.send_message(
+            chat_id=MASTERS_GROUP_ID,
+            text=(
+                f"❌ Буюртма №{order_id} "
+                f"{master_name} томонидан рад этилди."
+            )
+        )
+
+        return
 
 
 # =========================================================
@@ -641,7 +866,7 @@ async def error_handler(
 
 
 # =========================================================
-# ASYNC BOT
+# BOT ISHGA TUSHIRISH
 # =========================================================
 
 async def run_bot(
@@ -662,44 +887,31 @@ async def run_bot(
             "Telegram polling ishga tushdi."
         )
 
-
         while True:
 
             await asyncio.sleep(
                 3600
             )
 
-
     finally:
 
         try:
-
             await application.updater.stop()
-
         except Exception:
-
             logger.exception(
                 "Updater stop xatosi"
             )
 
-
         try:
-
             await application.stop()
-
         except Exception:
-
             logger.exception(
                 "Application stop xatosi"
             )
 
-
         try:
-
             await application.shutdown()
-
         except Exception:
-
             logger.exception(
                 "Application shutdown xatosi"
             )
@@ -723,10 +935,6 @@ def main():
     )
 
 
-    # -----------------------------------------------------
-    # /start
-    # -----------------------------------------------------
-
     application.add_handler(
         CommandHandler(
             "start",
@@ -734,10 +942,6 @@ def main():
         )
     )
 
-
-    # -----------------------------------------------------
-    # /id
-    # -----------------------------------------------------
 
     application.add_handler(
         CommandHandler(
@@ -747,9 +951,12 @@ def main():
     )
 
 
-    # -----------------------------------------------------
-    # Kontakt
-    # -----------------------------------------------------
+    application.add_handler(
+        CallbackQueryHandler(
+            order_callback
+        )
+    )
+
 
     application.add_handler(
         MessageHandler(
@@ -759,10 +966,6 @@ def main():
     )
 
 
-    # -----------------------------------------------------
-    # Oddiy matn
-    # -----------------------------------------------------
-
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -771,18 +974,10 @@ def main():
     )
 
 
-    # -----------------------------------------------------
-    # Error
-    # -----------------------------------------------------
-
     application.add_error_handler(
         error_handler
     )
 
-
-    # -----------------------------------------------------
-    # Flask
-    # -----------------------------------------------------
 
     flask_thread = Thread(
         target=run_flask,
@@ -796,15 +991,10 @@ def main():
         "Flask server ishga tushdi."
     )
 
-
     logger.info(
         "Telegram bot ishga tushdi."
     )
 
-
-    # -----------------------------------------------------
-    # Telegram
-    # -----------------------------------------------------
 
     asyncio.run(
         run_bot(application)
@@ -816,5 +1006,4 @@ def main():
 # =========================================================
 
 if __name__ == "__main__":
-
     main()
