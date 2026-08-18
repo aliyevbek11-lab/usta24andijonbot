@@ -1,9 +1,16 @@
 import os
+import asyncio
 import logging
-from flask import Flask
 from threading import Thread
 
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from flask import Flask
+
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+)
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -12,38 +19,51 @@ from telegram.ext import (
     filters,
 )
 
-# =========================
+
+# =========================================================
 # SOZLAMALAR
-# =========================
+# =========================================================
 
 TOKEN = os.getenv("BOT_TOKEN")
 MASTERS_GROUP_ID = os.getenv("MASTERS_GROUP_ID")
 
+
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN topilmadi!")
+
 
 if not MASTERS_GROUP_ID:
     raise RuntimeError("MASTERS_GROUP_ID topilmadi!")
 
-try:
-    MASTERS_GROUP_ID = int(MASTERS_GROUP_ID)
-except ValueError:
-    raise RuntimeError("MASTERS_GROUP_ID raqam bo‘lishi kerak!")
 
-# =========================
+try:
+    MASTERS_GROUP_ID = int(MASTERS_GROUP_ID.strip())
+except ValueError:
+    raise RuntimeError(
+        "MASTERS_GROUP_ID raqam bo‘lishi kerak!"
+    )
+
+
+# =========================================================
 # LOG
-# =========================
+# =========================================================
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format=(
+        "%(asctime)s - "
+        "%(name)s - "
+        "%(levelname)s - "
+        "%(message)s"
+    ),
     level=logging.INFO,
 )
 
 logger = logging.getLogger(__name__)
 
-# =========================
+
+# =========================================================
 # FLASK
-# =========================
+# =========================================================
 
 app = Flask(__name__)
 
@@ -59,15 +79,26 @@ def health():
 
 
 def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            10000
+        )
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
 
 
-# =========================
+# =========================================================
 # MENU
-# =========================
+# =========================================================
 
 def main_menu():
+
     keyboard = [
         ["🛠 Usta chaqirish"],
         ["📋 Xizmatlar", "📞 Aloqa"],
@@ -79,20 +110,24 @@ def main_menu():
     )
 
 
-# =========================
+# =========================================================
 # BUYURTMA HOLATI
-# =========================
+# =========================================================
 
 user_orders = {}
 
 
-# =========================
+# =========================================================
 # START
-# =========================
+# =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
-    user = update.effective_user
+    if not update.message:
+        return
 
     text = (
         "👋 Assalomu alaykum!\n\n"
@@ -108,11 +143,42 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# =========================
-# XIZMATLAR
-# =========================
+# =========================================================
+# CHAT ID
+# =========================================================
 
-async def services(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def chat_id_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
+
+    chat = update.effective_chat
+
+    if not chat:
+        return
+
+    await update.message.reply_text(
+        f"🆔 Chat ID:\n"
+        f"{chat.id}\n\n"
+        f"📌 Chat turi: {chat.type}\n"
+        f"📌 Nomi: {chat.title or '-'}"
+    )
+
+
+# =========================================================
+# XIZMATLAR
+# =========================================================
+
+async def services(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
 
     text = (
         "🛠 USTA 24 XIZMATLARI\n\n"
@@ -121,7 +187,7 @@ async def services(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔧 Mebel ta’mirlash\n"
         "🍽 Oshxona mebellari\n"
         "🚪 Shkaf yig‘ish va ta’mirlash\n"
-        "🛏 Krovать yig‘ish\n"
+        "🛏 Krovat yig‘ish\n"
         "🪑 Stol va stul yig‘ish\n"
         "📦 Mebelni qismlarga ajratish va yig‘ish\n"
         "🚚 Mebel tashish\n"
@@ -142,11 +208,17 @@ async def services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# =========================
+# =========================================================
 # ALOQA
-# =========================
+# =========================================================
 
-async def contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def contact(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
 
     text = (
         "📞 USTA 24\n\n"
@@ -162,11 +234,17 @@ async def contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# =========================
+# =========================================================
 # USTA CHAQIRISH
-# =========================
+# =========================================================
 
-async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_order(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
 
     user_id = update.effective_user.id
 
@@ -180,60 +258,116 @@ async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# =========================
+# =========================================================
 # BUYURTMA QABUL QILISH
-# =========================
+# =========================================================
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not update.message:
         return
 
-    user_id = update.effective_user.id
-    text = (update.message.text or "").strip()
-    # MENU TUGMALARI
-    if text == "🛠 Usta chaqirish":
-        await start_order(update, context)
+    user = update.effective_user
+
+    if not user:
         return
+
+    user_id = user.id
+
+    # Kontakt yuborilganda message.text None bo‘ladi
+    text = (
+        update.message.text or ""
+    ).strip()
+
+
+    # =====================================================
+    # MENU
+    # =====================================================
+
+    if text == "🛠 Usta chaqirish":
+
+        await start_order(
+            update,
+            context
+        )
+
+        return
+
 
     if text == "📋 Xizmatlar":
-        await services(update, context)
+
+        await services(
+            update,
+            context
+        )
+
         return
+
 
     if text == "📞 Aloqa":
-        await contact(update, context)
+
+        await contact(
+            update,
+            context
+        )
+
         return
 
-    # BUYURTMA YO‘Q BO‘LSA
+
+    # =====================================================
+    # BUYURTMA YO‘Q
+    # =====================================================
+
     if user_id not in user_orders:
+
         await update.message.reply_text(
             "Iltimos, menyudan kerakli xizmatni tanlang.",
             reply_markup=main_menu()
         )
+
         return
 
+
     order = user_orders[user_id]
+
     step = order.get("step")
 
-    # =====================
-    # ISM
-    # =====================
+
+    # =====================================================
+    # 1. ISM
+    # =====================================================
 
     if step == "name":
 
+        if not text:
+
+            await update.message.reply_text(
+                "📝 Iltimos, ismingizni yozing:"
+            )
+
+            return
+
+
         order["name"] = text
+
         order["step"] = "phone"
+
 
         phone_button = KeyboardButton(
             "📱 Telefon raqamimni yuborish",
             request_contact=True
         )
 
+
         keyboard = ReplyKeyboardMarkup(
             [[phone_button]],
             resize_keyboard=True,
             one_time_keyboard=True
         )
+
 
         await update.message.reply_text(
             "2️⃣ Telefon raqamingizni yuboring:",
@@ -242,19 +376,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    # =====================
-    # TELEFON
-    # =====================
+
+    # =====================================================
+    # 2. TELEFON
+    # =====================================================
 
     if step == "phone":
 
         if update.message.contact:
-            phone = update.message.contact.phone_number
+
+            phone = (
+                update.message.contact.phone_number
+            )
+
         else:
+
             phone = text
 
+
+        if not phone:
+
+            await update.message.reply_text(
+                "📱 Iltimos, telefon raqamingizni yuboring."
+            )
+
+            return
+
+
         order["phone"] = phone
+
         order["step"] = "service"
+
 
         keyboard = ReplyKeyboardMarkup(
             [
@@ -268,6 +420,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             resize_keyboard=True
         )
 
+
         await update.message.reply_text(
             "3️⃣ Qanday xizmat kerak?",
             reply_markup=keyboard
@@ -275,14 +428,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    # =====================
-    # XIZMAT
-    # =====================
+
+    # =====================================================
+    # 3. XIZMAT
+    # =====================================================
 
     if step == "service":
 
+        if not text:
+
+            await update.message.reply_text(
+                "Iltimos, xizmat turini tanlang."
+            )
+
+            return
+
+
         order["service"] = text
+
         order["step"] = "address"
+
 
         await update.message.reply_text(
             "4️⃣ Манзилингизни ёзинг:\n\n"
@@ -292,14 +457,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    # =====================
-    # MANZIL
-    # =====================
+
+    # =====================================================
+    # 4. MANZIL
+    # =====================================================
 
     if step == "address":
 
+        if not text:
+
+            await update.message.reply_text(
+                "📍 Iltimos, manzilingizni yozing."
+            )
+
+            return
+
+
         order["address"] = text
+
         order["step"] = "description"
+
 
         await update.message.reply_text(
             "5️⃣ Буюртма ҳақида қисқача маълумот ёзинг:\n\n"
@@ -311,21 +488,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    # =====================
-    # IZOH
-    # =====================
+
+    # =====================================================
+    # 5. IZOH
+    # =====================================================
 
     if step == "description":
 
+        if not text:
+
+            await update.message.reply_text(
+                "📝 Iltimos, buyurtma haqida "
+                "qisqacha ma'lumot yozing."
+            )
+
+            return
+
+
         order["description"] = text
 
-        await send_order_to_masters(
-            update,
-            context,
-            order
-        )
 
+        # -------------------------------------------------
+        # USTALAR GURUHIGA YUBORISH
+        # -------------------------------------------------
+
+        try:
+
+            await send_order_to_masters(
+                update,
+                context,
+                order
+            )
+
+        except Exception:
+
+            logger.exception(
+                "USTALAR GURUHIGA YUBORISHDA XATO"
+            )
+
+            await update.message.reply_text(
+                "❌ Буюртмани усталар гуруҳига "
+                "юборишда хатолик юз берди.\n\n"
+                "Илтимос, диспетчер билан боғланинг:\n"
+                "☎️ +998 77 069 00 03"
+            )
+
+            return
+
+
+        # Buyurtma muvaffaqiyatli yuborilgandan keyin
         del user_orders[user_id]
+
 
         await update.message.reply_text(
             "✅ Буюртмангиз қабул қилинди!\n\n"
@@ -338,9 +551,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-# =========================
+# =========================================================
 # USTALAR GURUHIGA YUBORISH
-# =========================
+# =========================================================
 
 async def send_order_to_masters(
     update: Update,
@@ -350,24 +563,39 @@ async def send_order_to_masters(
 
     user = update.effective_user
 
+    if not user:
+        return
+
+
     username = (
         f"@{user.username}"
         if user.username
         else "username yo‘q"
     )
 
+
     message = (
         "🆕 YANGI BUYURTMA\n\n"
 
         f"🔢 Буюртма: #{user.id}\n\n"
 
-        f"👤 Мижоз: {order.get('name', '-')}\n"
-        f"📞 Телефон: {order.get('phone', '-')}\n"
-        f"🛠 Хизмат: {order.get('service', '-')}\n"
-        f"📍 Манзил: {order.get('address', '-')}\n"
-        f"📝 Изоҳ: {order.get('description', '-')}\n\n"
+        f"👤 Мижоз: "
+        f"{order.get('name', '-')}\n"
+
+        f"📞 Телефон: "
+        f"{order.get('phone', '-')}\n"
+
+        f"🛠 Хизмат: "
+        f"{order.get('service', '-')}\n"
+
+        f"📍 Манзил: "
+        f"{order.get('address', '-')}\n"
+
+        f"📝 Изоҳ: "
+        f"{order.get('description', '-')}\n\n"
 
         f"👤 Telegram: {username}\n"
+
         f"🆔 User ID: {user.id}\n\n"
 
         "🚨 Уста буюртмани қабул қилиш учун "
@@ -377,21 +605,22 @@ async def send_order_to_masters(
         "+998 77 069 00 03"
     )
 
+
+    logger.info(
+        "Buyurtmani guruhga yuborish: %s",
+        MASTERS_GROUP_ID
+    )
+
+
     await context.bot.send_message(
         chat_id=MASTERS_GROUP_ID,
         text=message
     )
 
-async def show_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat:
-        print(
-            f"CHAT ID: {update.effective_chat.id} | "
-            f"CHAT TYPE: {update.effective_chat.type} | "
-            f"CHAT TITLE: {update.effective_chat.title}"
-        )
-# =========================
+
+# =========================================================
 # ERROR
-# =========================
+# =========================================================
 
 async def error_handler(
     update: object,
@@ -399,38 +628,121 @@ async def error_handler(
 ):
 
     logger.error(
-        "Xatolik:",
+        "BOT XATOSI:",
         exc_info=context.error
     )
 
 
-# =========================
-# BOT ISHGA TUSHIRISH
-# =========================
+# =========================================================
+# ASYNC BOT
+# =========================================================
+
+async def run_bot(
+    application: Application
+):
+
+    await application.initialize()
+
+    await application.start()
+
+    try:
+
+        await application.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES
+        )
+
+        logger.info(
+            "Telegram polling ishga tushdi."
+        )
+
+
+        while True:
+
+            await asyncio.sleep(
+                3600
+            )
+
+
+    finally:
+
+        try:
+
+            await application.updater.stop()
+
+        except Exception:
+
+            logger.exception(
+                "Updater stop xatosi"
+            )
+
+
+        try:
+
+            await application.stop()
+
+        except Exception:
+
+            logger.exception(
+                "Application stop xatosi"
+            )
+
+
+        try:
+
+            await application.shutdown()
+
+        except Exception:
+
+            logger.exception(
+                "Application shutdown xatosi"
+            )
+
+
+# =========================================================
+# MAIN
+# =========================================================
 
 def main():
 
-    logger.info("USTA 24 BOT ishga tushmoqda...")
+    logger.info(
+        "USTA 24 BOT ishga tushmoqda..."
+    )
+
 
     application = (
         Application.builder()
         .token(TOKEN)
         .build()
     )
-application.add_handler(
-    MessageHandler(
-        filters.ALL,
-        show_chat_id
-    )
- application.add_handler(
-    MessageHandler(
-        filters.ALL,
-        show_chat_id
-    )
-)
+
+
+    # -----------------------------------------------------
+    # /start
+    # -----------------------------------------------------
+
     application.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start
+        )
     )
+
+
+    # -----------------------------------------------------
+    # /id
+    # -----------------------------------------------------
+
+    application.add_handler(
+        CommandHandler(
+            "id",
+            chat_id_command
+        )
+    )
+
+
+    # -----------------------------------------------------
+    # Kontakt
+    # -----------------------------------------------------
 
     application.add_handler(
         MessageHandler(
@@ -439,6 +751,11 @@ application.add_handler(
         )
     )
 
+
+    # -----------------------------------------------------
+    # Oddiy matn
+    # -----------------------------------------------------
+
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -446,11 +763,20 @@ application.add_handler(
         )
     )
 
+
+    # -----------------------------------------------------
+    # Error
+    # -----------------------------------------------------
+
     application.add_error_handler(
         error_handler
     )
 
-    # Flask serverni alohida ishga tushirish
+
+    # -----------------------------------------------------
+    # Flask
+    # -----------------------------------------------------
+
     flask_thread = Thread(
         target=run_flask,
         daemon=True
@@ -458,16 +784,30 @@ application.add_handler(
 
     flask_thread.start()
 
-    logger.info("Flask server ishga tushdi.")
-    logger.info("Telegram bot ishga tushdi.")
 
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES
+    logger.info(
+        "Flask server ishga tushdi."
     )
 
 
-# =========================
-# START
-# =========================
+    logger.info(
+        "Telegram bot ishga tushdi."
+    )
 
-if __name__ == 
+
+    # -----------------------------------------------------
+    # Telegram
+    # -----------------------------------------------------
+
+    asyncio.run(
+        run_bot(application)
+    )
+
+
+# =========================================================
+# START
+# =========================================================
+
+if __name__ == "__main__":
+
+    main()
