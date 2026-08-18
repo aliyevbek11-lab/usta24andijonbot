@@ -422,7 +422,7 @@ application.add_handler(
         filters.ALL,
         show_chat_id
     )
-) application.add_handler(
+ application.add_handler(
     MessageHandler(
         filters.ALL,
         show_chat_id
