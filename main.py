@@ -1,176 +1,411 @@
 import os
-import threading
-
+import logging
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from threading import Thread
+
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
 
+# =========================
+# SOZLAMALAR
+# =========================
+
 TOKEN = os.getenv("BOT_TOKEN")
-GROUP_ID = int(os.getenv("GROUP_ID", "-3771002872"))
+MASTERS_GROUP_ID = os.getenv("MASTERS_GROUP_ID")
+
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN topilmadi!")
+
+if not MASTERS_GROUP_ID:
+    raise RuntimeError("MASTERS_GROUP_ID topilmadi!")
+
+try:
+    MASTERS_GROUP_ID = int(MASTERS_GROUP_ID)
+except ValueError:
+    raise RuntimeError("MASTERS_GROUP_ID raqam bo‘lishi kerak!")
+
+# =========================
+# LOG
+# =========================
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+
+logger = logging.getLogger(__name__)
+
+# =========================
+# FLASK
+# =========================
 
 app = Flask(__name__)
 
-orders = {}
-user_states = {}
 
-
-@app.get("/")
+@app.route("/")
 def home():
-    return "USTA 24 Dispatcher Bot is running!"
+    return "USTA 24 BOT ISHLAYAPTI!"
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Ассалому алайкум!\n\n"
-        "🤖 USTA 24 Диспетчер боти\n\n"
-        "Янги буюртма киритиш учун /new ни босинг."
+@app.route("/health")
+def health():
+    return "OK"
+
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+
+# =========================
+# MENU
+# =========================
+
+def main_menu():
+    keyboard = [
+        ["🛠 Usta chaqirish"],
+        ["📋 Xizmatlar", "📞 Aloqa"],
+    ]
+
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True
     )
 
 
-async def new_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_states[update.effective_user.id] = {
+# =========================
+# BUYURTMA HOLATI
+# =========================
+
+user_orders = {}
+
+
+# =========================
+# START
+# =========================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user = update.effective_user
+
+    text = (
+        "👋 Assalomu alaykum!\n\n"
+        "🏠 USTA 24 xizmatiga xush kelibsiz!\n\n"
+        "🔧 Uy va ofis uchun ustalar xizmatlari.\n"
+        "📍 Andijon shahri\n\n"
+        "Kerakli xizmatni tanlang:"
+    )
+
+    await update.message.reply_text(
+        text,
+        reply_markup=main_menu()
+    )
+
+
+# =========================
+# XIZMATLAR
+# =========================
+
+async def services(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    text = (
+        "🛠 USTA 24 XIZMATLARI\n\n"
+
+        "🪑 Mebel yig‘ish\n"
+        "🔧 Mebel ta’mirlash\n"
+        "🍽 Oshxona mebellari\n"
+        "🚪 Shkaf yig‘ish va ta’mirlash\n"
+        "🛏 Krovать yig‘ish\n"
+        "🪑 Stol va stul yig‘ish\n"
+        "📦 Mebelni qismlarga ajratish va yig‘ish\n"
+        "🚚 Mebel tashish\n"
+        "🏠 Uy ko‘chirish\n"
+        "🚛 Yuk tashish\n"
+        "🔩 Santexnika ishlari\n"
+        "⚡ Elektr ishlari\n"
+        "🔥 Payvandlash ishlari\n"
+        "🔨 Boshqa uy xizmatlari\n\n"
+
+        "📞 Buyurtma berish uchun "
+        "«🛠 Usta chaqirish» tugmasini bosing."
+    )
+
+    await update.message.reply_text(
+        text,
+        reply_markup=main_menu()
+    )
+
+
+# =========================
+# ALOQA
+# =========================
+
+async def contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    text = (
+        "📞 USTA 24\n\n"
+        "☎️ Telefon: +998 77 069 00 03\n\n"
+        "📍 Andijon shahri\n\n"
+        "🛠 Usta chaqirish uchun "
+        "«🛠 Usta chaqirish» tugmasini bosing."
+    )
+
+    await update.message.reply_text(
+        text,
+        reply_markup=main_menu()
+    )
+
+
+# =========================
+# USTA CHAQIRISH
+# =========================
+
+async def start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user_id = update.effective_user.id
+
+    user_orders[user_id] = {
         "step": "name"
     }
 
     await update.message.reply_text(
-        "🆕 Янги буюртма\n\n"
-        "1️⃣ Мижоз исмини киритинг:"
+        "📝 Буюртма бериш\n\n"
+        "1️⃣ Мижоз исмингизни ёзинг:"
     )
 
 
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
+# =========================
+# BUYURTMA QABUL QILISH
+# =========================
 
-    if user_id not in user_states:
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not update.message:
         return
 
-    state = user_states[user_id]
-    step = state["step"]
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+
+    # MENU TUGMALARI
+    if text == "🛠 Usta chaqirish":
+        await start_order(update, context)
+        return
+
+    if text == "📋 Xizmatlar":
+        await services(update, context)
+        return
+
+    if text == "📞 Aloqa":
+        await contact(update, context)
+        return
+
+    # BUYURTMA YO‘Q BO‘LSA
+    if user_id not in user_orders:
+        await update.message.reply_text(
+            "Iltimos, menyudan kerakli xizmatni tanlang.",
+            reply_markup=main_menu()
+        )
+        return
+
+    order = user_orders[user_id]
+    step = order.get("step")
+
+    # =====================
+    # ISM
+    # =====================
 
     if step == "name":
-        state["name"] = text
-        state["step"] = "phone"
+
+        order["name"] = text
+        order["step"] = "phone"
+
+        phone_button = KeyboardButton(
+            "📱 Telefon raqamimni yuborish",
+            request_contact=True
+        )
+
+        keyboard = ReplyKeyboardMarkup(
+            [[phone_button]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
 
         await update.message.reply_text(
-            "📞 Мижоз телефон рақамини киритинг:"
+            "2️⃣ Telefon raqamingizni yuboring:",
+            reply_markup=keyboard
         )
 
-    elif step == "phone":
-        state["phone"] = text
-        state["step"] = "address"
-
-        await update.message.reply_text(
-            "📍 Манзилни киритинг:"
-        )
-
-    elif step == "address":
-        state["address"] = text
-        state["step"] = "work"
-
-        await update.message.reply_text(
-            "🔧 Қандай иш кераклигини ёзинг:"
-        )
-
-    elif step == "work":
-        state["work"] = text
-        state["step"] = "time"
-
-        await update.message.reply_text(
-            "⏰ Бориш вақтини киритинг:"
-        )
-
-    elif step == "time":
-        state["time"] = text
-
-        order_id = len(orders) + 1
-        orders[order_id] = state.copy()
-
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "🟢 БУЮРТМАНИ ОЛИШ",
-                    callback_data=f"take_{order_id}"
-                )
-            ]
-        ])
-
-        message = (
-            f"🔔 ЯНГИ БУЮРТМА №{order_id}\n\n"
-            f"👤 Мижоз: {state['name']}\n"
-            f"📞 Телефон: {state['phone']}\n"
-            f"📍 Манзил: {state['address']}\n"
-            f"🔧 Иш: {state['work']}\n"
-            f"⏰ Вақт: {state['time']}\n\n"
-            f"👷 Буюртмани олиш учун тугмани босинг."
-        )
-
-        try:
-            await context.bot.send_message(
-                chat_id=GROUP_ID,
-                text=message,
-                reply_markup=keyboard
-            )
-
-            await update.message.reply_text(
-                f"✅ Буюртма №{order_id} усталар гуруҳига юборилди."
-            )
-
-        except Exception as e:
-            print("GROUP SEND ERROR:", repr(e))
-
-            await update.message.reply_text(
-                "❌ Буюртмани гуруҳга юборишда хато юз берди."
-            )
-
-        del user_states[user_id]
-
-
-async def take_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    order_id = int(query.data.split("_")[1])
-
-    order = orders.get(order_id)
-
-    if not order:
-        await query.answer(
-            "Буюртма топилмади.",
-            show_alert=True
-        )
         return
 
-    master = query.from_user
+    # =====================
+    # TELEFON
+    # =====================
 
-    await query.edit_message_text(
-        f"🟢 БУЮРТМА №{order_id} ОЛИНДИ!\n\n"
-        f"👷 Уста: {master.full_name}\n"
-        f"👤 Мижоз: {order['name']}\n"
-        f"📞 Телефон: {order['phone']}\n"
-        f"📍 Манзил: {order['address']}\n"
-        f"🔧 Иш: {order['work']}\n"
-        f"⏰ Вақт: {order['time']}"
+    if step == "phone":
+
+        if update.message.contact:
+            phone = update.message.contact.phone_number
+        else:
+            phone = text
+
+        order["phone"] = phone
+        order["step"] = "service"
+
+        keyboard = ReplyKeyboardMarkup(
+            [
+                ["🪑 Mebel"],
+                ["🚚 Yuk tashish / ko‘chirish"],
+                ["🔩 Santexnika"],
+                ["⚡ Elektr"],
+                ["🔥 Payvandlash"],
+                ["🔨 Boshqa xizmat"],
+            ],
+            resize_keyboard=True
+        )
+
+        await update.message.reply_text(
+            "3️⃣ Qanday xizmat kerak?",
+            reply_markup=keyboard
+        )
+
+        return
+
+    # =====================
+    # XIZMAT
+    # =====================
+
+    if step == "service":
+
+        order["service"] = text
+        order["step"] = "address"
+
+        await update.message.reply_text(
+            "4️⃣ Манзилингизни ёзинг:\n\n"
+            "Масалан:\n"
+            "Андижон шаҳар, Бобуршоҳ кўчаси, 15-уй"
+        )
+
+        return
+
+    # =====================
+    # MANZIL
+    # =====================
+
+    if step == "address":
+
+        order["address"] = text
+        order["step"] = "description"
+
+        await update.message.reply_text(
+            "5️⃣ Буюртма ҳақида қисқача маълумот ёзинг:\n\n"
+            "Масалан:\n"
+            "Шкаф йиғиш керак.\n"
+            "Ёки:\n"
+            "Уй кўчириш керак, 3-қават."
+        )
+
+        return
+
+    # =====================
+    # IZOH
+    # =====================
+
+    if step == "description":
+
+        order["description"] = text
+
+        await send_order_to_masters(
+            update,
+            context,
+            order
+        )
+
+        del user_orders[user_id]
+
+        await update.message.reply_text(
+            "✅ Буюртмангиз қабул қилинди!\n\n"
+            "👨‍🔧 Буюртма усталар гуруҳига юборилди.\n"
+            "📞 Тез орада сиз билан боғланишади.\n\n"
+            "☎️ USTA 24: +998 77 069 00 03",
+            reply_markup=main_menu()
+        )
+
+        return
+
+
+# =========================
+# USTALAR GURUHIGA YUBORISH
+# =========================
+
+async def send_order_to_masters(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    order: dict
+):
+
+    user = update.effective_user
+
+    username = (
+        f"@{user.username}"
+        if user.username
+        else "username yo‘q"
+    )
+
+    message = (
+        "🆕 YANGI BUYURTMA\n\n"
+
+        f"🔢 Буюртма: #{user.id}\n\n"
+
+        f"👤 Мижоз: {order.get('name', '-')}\n"
+        f"📞 Телефон: {order.get('phone', '-')}\n"
+        f"🛠 Хизмат: {order.get('service', '-')}\n"
+        f"📍 Манзил: {order.get('address', '-')}\n"
+        f"📝 Изоҳ: {order.get('description', '-')}\n\n"
+
+        f"👤 Telegram: {username}\n"
+        f"🆔 User ID: {user.id}\n\n"
+
+        "🚨 Уста буюртмани қабул қилиш учун "
+        "диспетчер билан боғлансин.\n\n"
+
+        "☎️ USTA 24\n"
+        "+998 77 069 00 03"
+    )
+
+    await context.bot.send_message(
+        chat_id=MASTERS_GROUP_ID,
+        text=message
     )
 
 
-def run_flask():
-    app.run(
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", "10000"))
+# =========================
+# ERROR
+# =========================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    logger.error(
+        "Xatolik:",
+        exc_info=context.error
     )
 
+
+# =========================
+# BOT ISHGA TUSHIRISH
+# =========================
 
 def main():
-    if not TOKEN:
-        raise RuntimeError("BOT_TOKEN topilmadi")
+
+    logger.info("USTA 24 BOT ishga tushmoqda...")
 
     application = (
         Application.builder()
@@ -183,29 +418,42 @@ def main():
     )
 
     application.add_handler(
-        CommandHandler("new", new_order)
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            take_order,
-            pattern=r"^take_\d+$"
+        MessageHandler(
+            filters.CONTACT,
+            handle_message
         )
     )
 
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            message_handler
+            handle_message
         )
     )
 
-    threading.Thread(
+    application.add_error_handler(
+        error_handler
+    )
+
+    # Flask serverni alohida ishga tushirish
+    flask_thread = Thread(
         target=run_flask,
         daemon=True
-    ).start()
+    )
 
-    application.run_polling()
+    flask_thread.start()
+
+    logger.info("Flask server ishga tushdi.")
+    logger.info("Telegram bot ishga tushdi.")
+
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES
+    )
 
 
+# =========================
+# START
+# =========================
 
+if __name__ == "__main__":
+    main()
