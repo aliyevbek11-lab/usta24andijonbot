@@ -176,13 +176,16 @@ async def init_database():
             )
         await conn.execute(
           """
-          CREATE TABLE IF NOT EXISTS customers (
+          CREATE TABLE IF NOT EXISTS
+customers (
             id SERIAL PRIMARY KEY,
-            telegram_id BIGINT UNIQUE NOT NULL,
+            telegram_id BIGINT UNIQUE NOT 
+NULL,
             name TEXT,
             phone TEXT,
             username TEXT,
-            created_at TIMESTAMP DEFAULT NOW(),
+            created_at TIMESTAMP DEFAULT
+NOW(),
             last_order_at TIMESTAMP
       )
       """
