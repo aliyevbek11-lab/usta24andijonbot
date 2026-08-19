@@ -1357,13 +1357,18 @@ async def handle_message(
         "step"
     )
     
+        order = user_orders[user_id]
+
+    step = order.get(
+        "step"
+    )
+
     logger.info(
-       "DEBUG ORDER: user_id=%s, step=%s,    
-  text=%r",
+        "DEBUG ORDER: user_id=%s, step=%s, text=%r",
         user_id,
         step,
         text
-)
+    )
 
     # =====================================================
     # NAME
