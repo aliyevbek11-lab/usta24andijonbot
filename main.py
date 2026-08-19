@@ -123,7 +123,7 @@ async def init_database():
 
         return
 
-    try:
+     try:
 
         import asyncpg
 
@@ -135,42 +135,44 @@ async def init_database():
 
         async with db_pool.acquire() as conn:
 
-            await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS orders (
-                    id SERIAL PRIMARY KEY,
+           await conn.execute(
+             """
+              CREATE TABLE IF NOT EXISTS orders (
+                id SERIAL PRIMARY KEY,
 
-                    customer_id BIGINT NOT NULL,
+                 customer_id BIGINT NOT NULL,
 
-                    customer_name TEXT,
+                 customer_name TEXT,
 
-                    phone TEXT,
+                 phone TEXT,
 
-                    service TEXT,
+                 service TEXT,
 
-                    address TEXT,
+                 address TEXT,
 
-                    description TEXT,
+                 description TEXT,
 
-                    username TEXT,
+                 username TEXT,
 
-                    status TEXT NOT NULL DEFAULT 'open',
+                 status TEXT NOT NULL DEFAULT 
+  'open',
 
-                    master_id BIGINT,
+                  master_id BIGINT,
 
-                    master_name TEXT,
+                  master_name TEXT,
 
-                    created_at TIMESTAMP DEFAULT NOW(),
+                  created_at TIMESTAMP DEFAULT   
+   NOW(),
 
-                    accepted_at TIMESTAMP,
+                  accepted_at TIMESTAMP,
 
-                    started_at TIMESTAMP,
+                  started_at TIMESTAMP,
 
-                    completed_at TIMESTAMP,
+                  completed_at TIMESTAMP,
 
-                    cancelled_at TIMESTAMP,
+                  cancelled_at TIMESTAMP,
 
-                    rejected_at TIMESTAMP
+                  rejected_at TIMESTAMP
                 )
                 """
             )
@@ -187,16 +189,16 @@ NULL,
             created_at TIMESTAMP DEFAULT
 NOW(),
             last_order_at TIMESTAMP
+         )
+         """
       )
-      """
-   )
-        logger.info(
-            "PostgreSQL muvaffaqiyatli ulandi."
-        )
+         
+   logger.info(
+     "PostgreSQL muvaffaqiyatli ulandi."  
+   ) 
+except Exception:
 
-    except Exception:
-
-        logger.exception(
+   logger.exception(
             "PostgreSQL ulanishida XATO!"
         )
 
