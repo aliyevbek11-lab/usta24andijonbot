@@ -1,3 +1,5 @@
+print("===== ADMIN_BOT.PY LOADED =====")
+
 import asyncio
 import logging
 import os
