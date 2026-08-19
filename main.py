@@ -1627,30 +1627,21 @@ async def send_order_to_masters(
     user = update.effective_user
 
     if not user:
-
         raise RuntimeError(
             "Telegram user topilmadi!"
         )
-
 
     # =====================================================
     # USERNAME
     # =====================================================
 
     if user.username:
-
-        username = (
-            f"@{user.username}"
-        )
-
+        username = f"@{user.username}"
     else:
-
         username = "username yo‘q"
 
-
     logger.info(
-        "Buyurtmani ustalar guruhiga yuborish "
-        "boshlanmoqda..."
+        "Buyurtmani ustalar guruhiga yuborish boshlanmoqda..."
     )
 
     logger.info(
@@ -1658,139 +1649,81 @@ async def send_order_to_masters(
         MASTERS_GROUP_ID
     )
 
+    # =====================================================
+    # SAVE CUSTOMER
+    # =====================================================
 
-    # =====================================================
-    # DATABASE
-    # =====================================================
-    
-      await db_save_customer(
+    await db_save_customer(
         telegram_id=user.id,
         name=order.get("name"),
         phone=order.get("phone"),
         username=username
     )
+
+    # =====================================================
+    # DATABASE - CREATE ORDER
+    # =====================================================
+
     db_order_id = await db_create_order(
-
         customer_id=user.id,
-
-        customer_name=order.get(
-            "name"
-        ),
-
-        phone=order.get(
-            "phone"
-        ),
-
-        service=order.get(
-            "service"
-        ),
-
-        address=order.get(
-            "address"
-        ),
-
-        description=order.get(
-            "description"
-        ),
-
+        customer_name=order.get("name"),
+        phone=order.get("phone"),
+        service=order.get("service"),
+        address=order.get("address"),
+        description=order.get("description"),
         username=username
     )
 
-
     if db_order_id:
-
-        order_id = int(
-            db_order_id
-        )
-
+        order_id = int(db_order_id)
     else:
-
         order_counter += 1
-
         order_id = order_counter
-
 
     # =====================================================
     # MEMORY
     # =====================================================
 
     orders[order_id] = {
-
-        "customer_id":
-            user.id,
-
-        "status":
-            "open",
-
-        "master_id":
-            None,
-
-        "master_name":
-            None,
-
-        "order":
-            order,
+        "customer_id": user.id,
+        "status": "open",
+        "master_id": None,
+        "master_name": None,
+        "order": order,
     }
-
 
     # =====================================================
     # MESSAGE
     # =====================================================
 
     message = (
-
         "🆕 YANGI BUYURTMA\n\n"
-
         f"🔢 Буюртма: #{order_id}\n\n"
-
-        f"👤 Мижоз: "
-        f"{order.get('name', '-')}\n"
-
-        f"📞 Телефон: "
-        f"{order.get('phone', '-')}\n"
-
-        f"🛠 Хизмат: "
-        f"{order.get('service', '-')}\n"
-
-        f"📍 Манзил: "
-        f"{order.get('address', '-')}\n"
-
-        f"📝 Изоҳ: "
-        f"{order.get('description', '-')}\n\n"
-
+        f"👤 Мижоз: {order.get('name', '-')}\n"
+        f"📞 Телефон: {order.get('phone', '-')}\n"
+        f"🛠 Хизмат: {order.get('service', '-')}\n"
+        f"📍 Манзил: {order.get('address', '-')}\n"
+        f"📝 Изоҳ: {order.get('description', '-')}\n\n"
         f"👤 Telegram: {username}\n"
-
         f"🆔 User ID: {user.id}\n\n"
-
         "🚨 Уста буюртмани қабул қилиш "
         "учун қуйидаги тугмани босинг."
     )
 
-
     keyboard = InlineKeyboardMarkup(
-
         [
             [
-
                 InlineKeyboardButton(
-
                     "✅ Қабул қилиш",
-
-                    callback_data=
-                    f"accept:{order_id}"
+                    callback_data=f"accept:{order_id}"
                 ),
-
                 InlineKeyboardButton(
-
                     "❌ Рад этиш",
-
-                    callback_data=
-                    f"reject:{order_id}"
+                    callback_data=f"reject:{order_id}"
                 ),
             ]
         ]
     )
-
 
     # =====================================================
     # TELEGRAM SEND
@@ -1799,26 +1732,17 @@ async def send_order_to_masters(
     try:
 
         sent_message = await context.bot.send_message(
-
             chat_id=MASTERS_GROUP_ID,
-
             text=message,
-
             reply_markup=keyboard
         )
-
 
     except Exception as e:
 
         logger.exception(
-
-            "❌ USTALAR GURUHIGA "
-            "YUBORISHDA XATO: %s",
-
+            "❌ USTALAR GURUHIGA YUBORISHDA XATO: %s",
             e
         )
-
-        # Memory'dagi noto‘g‘ri orderni olib tashlaymiz
 
         orders.pop(
             order_id,
@@ -1826,7 +1750,6 @@ async def send_order_to_masters(
         )
 
         raise
-
 
     # =====================================================
     # MESSAGE ID
@@ -1836,18 +1759,12 @@ async def send_order_to_masters(
         sent_message.message_id
     )
 
-
     logger.info(
-
-        "✅ Buyurtma #%s "
-        "guruhga yuborildi.",
-
+        "✅ Buyurtma #%s guruhga yuborildi.",
         order_id
     )
 
-
     return order_id
-
 
 # =========================================================
 # CALLBACK
