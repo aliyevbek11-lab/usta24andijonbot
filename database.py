@@ -10,7 +10,12 @@ pool = None
 async def connect_db():
 
     global pool
+    
+    print("DATABASE_URL EXISTS:", 
+  bool(DATABASE_URL))
 
+if DATABASE_URL:
+    print("DATABASE HOST:", DATABASE_URL.split("@")[-1].split("/")[0])
     pool = await asyncpg.create_pool(
         DATABASE_URL,
         min_size=1,
