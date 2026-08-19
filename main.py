@@ -688,7 +688,6 @@ async def contact(
 # =========================================================
 # START ORDER
 # =========================================================
-
 async def start_order(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -697,9 +696,94 @@ async def start_order(
     if not update.message:
         return
 
-    user_id = update.effective_user.id
+    user = update.effective_user
+
+    if not user:
+        return
+
+    user_id = user.id
+
+    # Мижозни базадан қидириш
+    customer = None
+
+    if db_pool:
+
+        try:
+
+            async with db_pool.acquire() as conn:
+
+                customer = await conn.fetchrow(
+                    """
+                    SELECT
+                        name,
+                        phone
+                    FROM customers
+                    WHERE telegram_id = $1
+                    """,
+                    user_id
+                )
+
+        except Exception:
+
+            logger.exception(
+                "Mijozni bazadan olishda xato!"
+            )
+
+    # =====================================================
+    # OLDIN KELGAN MIJOZ
+    # =====================================================
+
+    if customer and customer["name"] and customer["phone"]:
+
+        user_orders[user_id] = {
+
+            "step": "service",
+
+            "name": customer["name"],
+
+            "phone": customer["phone"]
+        }
+
+        keyboard = ReplyKeyboardMarkup(
+
+            [
+                ["🪑 Mebel"],
+
+                ["🚚 Yuk tashish / ko‘chirish"],
+
+                ["🔩 Santexnika"],
+
+                ["⚡ Elektr"],
+
+                ["🔥 Payvandlash"],
+
+                ["🔨 Boshqa xizmat"],
+            ],
+
+            resize_keyboard=True
+        )
+
+        await update.message.reply_text(
+
+            f"👋 Салом, {customer['name']}!\n\n"
+
+            "Сизни эсладик. ✅\n"
+
+            "Исм ва телефон рақамингиз сақланган.\n\n"
+
+            "3️⃣ Қандай хизмат керак?",
+
+            reply_markup=keyboard
+        )
+
+        return
+
+    # =====================================================
+    # YANGI MIJOZ
+    # =====================================================
 
     user_orders[user_id] = {
+
         "step": "name"
     }
 
