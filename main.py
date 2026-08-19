@@ -115,16 +115,13 @@ async def init_database():
     global db_pool
 
     if not DATABASE_URL:
-
         logger.warning(
             "DATABASE_URL topilmadi. "
             "Bot memory rejimida ishlaydi."
         )
-
         return
 
-     try:
-
+    try:
         import asyncpg
 
         db_pool = await asyncpg.create_pool(
@@ -135,74 +132,52 @@ async def init_database():
 
         async with db_pool.acquire() as conn:
 
-           await conn.execute(
-             """
-              CREATE TABLE IF NOT EXISTS orders (
-                id SERIAL PRIMARY KEY,
-
-                 customer_id BIGINT NOT NULL,
-
-                 customer_name TEXT,
-
-                 phone TEXT,
-
-                 service TEXT,
-
-                 address TEXT,
-
-                 description TEXT,
-
-                 username TEXT,
-
-                 status TEXT NOT NULL DEFAULT 
-  'open',
-
-                  master_id BIGINT,
-
-                  master_name TEXT,
-
-                  created_at TIMESTAMP DEFAULT   
-   NOW(),
-
-                  accepted_at TIMESTAMP,
-
-                  started_at TIMESTAMP,
-
-                  completed_at TIMESTAMP,
-
-                  cancelled_at TIMESTAMP,
-
-                  rejected_at TIMESTAMP
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS orders (
+                    id SERIAL PRIMARY KEY,
+                    customer_id BIGINT NOT NULL,
+                    customer_name TEXT,
+                    phone TEXT,
+                    service TEXT,
+                    address TEXT,
+                    description TEXT,
+                    username TEXT,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    master_id BIGINT,
+                    master_name TEXT,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    accepted_at TIMESTAMP,
+                    started_at TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    cancelled_at TIMESTAMP,
+                    rejected_at TIMESTAMP
                 )
                 """
             )
-        await conn.execute(
-          """
-          CREATE TABLE IF NOT EXISTS
-customers (
-            id SERIAL PRIMARY KEY,
-            telegram_id BIGINT UNIQUE NOT 
-NULL,
-            name TEXT,
-            phone TEXT,
-            username TEXT,
-            created_at TIMESTAMP DEFAULT
-NOW(),
-            last_order_at TIMESTAMP
-         )
-         """
-      )
-         
-       logger.info(
-         "PostgreSQL muvaffaqiyatli ulandi."  
-       ) 
-     except Exception:
 
-       logger.exception(
-          f"PostgreSQL ulanishida XATO!"
-  {e}"    
-       )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS customers (
+                    id SERIAL PRIMARY KEY,
+                    telegram_id BIGINT UNIQUE NOT NULL,
+                    name TEXT,
+                    phone TEXT,
+                    username TEXT,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    last_order_at TIMESTAMP
+                )
+                """
+            )
 
+        logger.info(
+            "PostgreSQL muvaffaqiyatli ulandi."
+        )
+
+    except Exception as e:
+        logger.error(
+            f"PostgreSQL XATO: {type(e).__name__}: {e}"
+        )
         db_pool = None
 
 
