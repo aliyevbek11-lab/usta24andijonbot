@@ -193,14 +193,15 @@ NOW(),
          """
       )
          
-   logger.info(
-     "PostgreSQL muvaffaqiyatli ulandi."  
-   ) 
-except Exception:
+       logger.info(
+         "PostgreSQL muvaffaqiyatli ulandi."  
+       ) 
+     except Exception:
 
-   logger.exception(
-            "PostgreSQL ulanishida XATO!"
-        )
+       logger.exception(
+          f"PostgreSQL ulanishida XATO!"
+  {e}"    
+       )
 
         db_pool = None
 
