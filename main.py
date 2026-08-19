@@ -1662,7 +1662,13 @@ async def send_order_to_masters(
     # =====================================================
     # DATABASE
     # =====================================================
-
+    
+      await db_save_customer(
+        telegram_id=user.id,
+        name=order.get("name"),
+        phone=order.get("phone"),
+        username=username
+    )
     db_order_id = await db_create_order(
 
         customer_id=user.id,
