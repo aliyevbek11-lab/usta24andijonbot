@@ -1348,10 +1348,10 @@ async def handle_message(
             reply_markup=main_menu()
         )
 
-        return
+        return 
 
-     order = user_orders[user_id]
-     step = order.get("step")
+    order = user_orders[user_id]
+    step = order.get("step")
 
     # =====================================================
     # NAME
