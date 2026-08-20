@@ -596,6 +596,19 @@ class Database:
             logger.error(f"Get master rating error: {e}")
             return {'count': 0, 'average': 0}
 
+    async def update_master_rating(self, master_id: int):
+        """Usta reytingini yangilash"""
+        try:
+            rating = await self.get_master_rating(master_id)
+            async with aiosqlite.connect(self.db_name) as db:
+                await db.execute(
+                    "UPDATE masters SET rating = ? WHERE id = ?",
+                    (rating['average'], master_id)
+                )
+                await db.commit()
+        except Exception as e:
+            logger.error(f"Update master rating error: {e}")
+
 # =====================================================
 # DATABASE OBJECT
 # =====================================================
@@ -1160,7 +1173,7 @@ async def master_start_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(
         f"✅ <b>ISH BAJARILDI!</b>\n\n"
         f"№{order_id}\n"
-        f"⭐ Yakunlash uchun /finish {order_id}",
+        f"⭐ Ishni yakunlash uchun '✅ Ishni yakunlash' tugmasini bosing",
         reply_markup=master_menu(),
         parse_mode="HTML"
     )
@@ -1212,22 +1225,26 @@ async def master_finish_handler(update: Update, context: ContextTypes.DEFAULT_TY
     await db.update_order_status(order_id, 'yakunlangan')
     context.user_data.pop('master_finish', None)
     
+    # Usta reytingini yangilash
+    await db.update_master_rating(order['master_id'])
+    
     # Mijozga rating so'rash
     try:
         await context.bot.send_message(
             order['client_id'],
             f"⭐ <b>BUYURTMA YAKUNLANDI!</b>\n\n"
-            f"№{order_id}\n"
-            f"🛠 {order['service']}\n\n"
+            f"📋 №{order_id}\n"
+            f"🛠 {order['service']}\n"
+            f"👨‍🔧 Usta: {(await db.get_master(order['master_id']))['name']}\n\n"
             f"📊 Ustani baholang: /rate {order_id}",
             parse_mode="HTML"
         )
-    except:
-        pass
+    except Exception as e:
+        logger.error(f"Rating xabar yuborishda xatolik: {e}")
     
     await update.message.reply_text(
         f"✅ <b>BUYURTMA YAKUNLANDI!</b>\n\n"
-        f"№{order_id}\n"
+        f"📋 №{order_id}\n"
         f"⭐ Mijoz bahosini kuting...",
         reply_markup=master_menu(),
         parse_mode="HTML"
@@ -1257,7 +1274,7 @@ async def rate_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if order['status'] != 'yakunlangan':
-        await update.message.reply_text(f"❌ Buyurtma hali yakunlanmagan!")
+        await update.message.reply_text(f"❌ Buyurtma hali yakunlanmagan! Status: {get_status_text(order['status'])}")
         return
     
     master = await db.get_master(order['master_id'])
@@ -1271,241 +1288,16 @@ async def rate_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([
             InlineKeyboardButton(f"{'⭐' * i} {i}", callback_data=f"rate_{order_id}_{order['master_id']}_{i}")
         ])
-    keyboard.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="back")])
     
     await update.message.reply_text(
         f"⭐ <b>USTANI BAHOLASH</b>\n\n"
-        f"№{order_id}\n"
-        f"👨‍🔧 Usta: {master['name']}\n\n"
+        f"📋 №{order_id}\n"
+        f"👨‍🔧 Usta: {master['name']}\n"
+        f"🛠 Xizmat: {order['service']}\n\n"
         f"Bahoni tanlang:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="HTML"
     )
-
-# =====================================================
-# CALLBACK HANDLER
-# =====================================================
-
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    user_id = query.from_user.id
-    
-    if data == "back":
-        await query.edit_text("⬅️ Orqaga qaytdingiz.")
-        return
-    
-    if data.startswith("os_"):
-        parts = data.split("_")
-        if len(parts) == 3:
-            order_id = int(parts[1])
-            status = parts[2]
-            await db.update_order_status(order_id, status)
-            await query.edit_text(f"✅ Buyurtma №{order_id} statusi o'zgartirildi!")
-            return
-    
-    if data.startswith("assign_"):
-        order_id = int(data.split("_")[1])
-        masters = await db.get_available_masters()
-        if not masters:
-            await query.edit_text("❌ Bo'sh ustalar yo'q!")
-            return
-        
-        await query.edit_text(
-            f"👨‍🔧 Buyurtma №{order_id} uchun ustani tanlang:",
-            reply_markup=master_select_keyboard(order_id, masters)
-        )
-        return
-    
-    if data.startswith("ms_"):
-        parts = data.split("_")
-        order_id = int(parts[1])
-        master_id = int(parts[2])
-        
-        await db.assign_master(order_id, master_id)
-        
-        # Mijozga xabar
-        order = await db.get_order(order_id)
-        if order:
-            try:
-                await context.bot.send_message(
-                    order['client_id'],
-                    f"✅ <b>USTA TAYINLANDI!</b>\n\n"
-                    f"№{order_id}\n"
-                    f"👨‍🔧 Usta tez orada bog'lanadi!",
-                    parse_mode="HTML"
-                )
-            except:
-                pass
-        
-        await query.edit_text(f"✅ Buyurtma №{order_id} ga usta tayinlandi!")
-        return
-    
-    if data.startswith("rate_"):
-        parts = data.split("_")
-        order_id = int(parts[1])
-        master_id = int(parts[2])
-        rating = int(parts[3])
-        
-        await db.add_rating(order_id, master_id, user_id, rating)
-        await db.update_master_rating(master_id)
-        
-        await query.edit_text(f"⭐ Rahmat! Usta {rating} ga baholandi! ✅")
-        return
-
-# =====================================================
-# UNKNOWN HANDLER
-# =====================================================
-
-async def handle_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "❌ Tushunmadim. Iltimos, tugmalardan foydalaning!\n"
-        "📖 Yordam olish uchun /help",
-        reply_markup=main_menu()
-    )
-
-# =====================================================
-# MAIN FUNCTION
-# =====================================================
-
-async def main():
-    try:
-        if not check_env():
-            sys.exit(1)
-        
-        await db.init_db()
-        logger.info("✅ Database initialized")
-        
-        # Flask serverni alohida thread da ishga tushirish
-        flask_thread = threading.Thread(target=run_flask, daemon=True)
-        flask_thread.start()
-        logger.info(f"✅ Flask server started on port {os.environ.get('PORT', 8080)}")
-        
-        # Application
-        application = ApplicationBuilder().token(BOT_TOKEN).build()
-        logger.info("✅ Application built")
-        
-        # Commands
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("admin", admin_panel))
-        application.add_handler(CommandHandler("stats", stats_command))
-        application.add_handler(CommandHandler("rate", rate_order))
-        application.add_handler(CommandHandler("finish", master_finish_order))
-        
-        # Add master conversation
-        add_master_conv = ConversationHandler(
-            entry_points=[CommandHandler("add_master", add_master_start)],
-            states={
-                ADD_MASTER_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_master_handler)],
-                ADD_MASTER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_master_handler)],
-                ADD_MASTER_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_master_handler)],
-                ADD_MASTER_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_master_handler)],
-                ADD_MASTER_SERVICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_master_handler)],
-            },
-            fallbacks=[CommandHandler("cancel", cancel_add_master)]
-        )
-        application.add_handler(add_master_conv)
-        
-        # Message handlers - Admin
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^👤 Mijozlar bazasi$') & filters.User(ADMIN_ID),
-            clients_list
-        ))
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^👨‍🔧 Ustalar$') & filters.User(ADMIN_ID),
-            masters_list
-        ))
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^➕ Usta qo\'shish$') & filters.User(ADMIN_ID),
-            add_master_start
-        ))
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^📋 Barcha buyurtmalar$') & (filters.User(ADMIN_ID) | filters.User(DISPATCHER_IDS)),
-            all_orders
-        ))
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^📊 Statistika$') & filters.User(ADMIN_ID),
-            stats_command
-        ))
-        
-        # Dispatcher handlers
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^🆕 Yangi buyurtmalar$') & (filters.User(ADMIN_ID) | filters.User(DISPATCHER_IDS)),
-            new_orders
-        ))
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^🟡 Qabul qilish$') & (filters.User(ADMIN_ID) | filters.User(DISPATCHER_IDS)),
-            accept_order
-        ))
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^🚫 Rad etish$') & (filters.User(ADMIN_ID) | filters.User(DISPATCHER_IDS)),
-            reject_order
-        ))
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^👨‍🔧 Usta tanlash$') & (filters.User(ADMIN_ID) | filters.User(DISPATCHER_IDS)),
-            assign_master_order
-        ))
-        
-        # Master handlers
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^🟡 Buyurtmani qabul qilish$'),
-            master_accept_order
-        ))
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^🔵 Ishni boshlash$'),
-            master_start_work
-        ))
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^✅ Ishni yakunlash$'),
-            master_finish_order
-        ))
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^📋 O\'z buyurtmalarim$'),
-            master_my_orders
-        ))
-        
-        # Client handlers
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^📋 Mening buyurtmalarim$'),
-            my_orders
-        ))
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^📝 Buyurtma berish$'),
-            order_start
-        ))
-        
-        # Navigation
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^⬅️ Asosiy menyu$'),
-            back_to_main
-        ))
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^⬅️ Admin menyu$'),
-            admin_panel
-        ))
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^ℹ️ Yordam$'),
-            help_command
-        ))
-        
-        # Callback
-        application.add_handler(CallbackQueryHandler(callback_handler))
-        
-        # Unknown
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handle_unknown
-        ))
-        
-        logger.info("🚀 Bot ishlayapti...")
-        await application.run_polling()
-        
-    except Exception as e:
-        logger.error(f"❌ Error: {e}")
-        sys.exit(1)
 
 # =====================================================
 # DISPATCHER FUNCTIONS
@@ -1676,8 +1468,8 @@ async def order_confirm_handler(update: Update, context: ContextTypes.DEFAULT_TY
                     [InlineKeyboardButton("👨‍🔧 Usta tayinlash", callback_data=f"assign_{order_id}")]
                 ])
             )
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Dispetcherga xabar yuborishda xatolik: {e}")
     
     return ConversationHandler.END
 
@@ -1688,6 +1480,239 @@ async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu()
     )
     return ConversationHandler.END
+
+# =====================================================
+# CALLBACK HANDLER
+# =====================================================
+
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    user_id = query.from_user.id
+    
+    if data == "back":
+        await query.edit_text("⬅️ Orqaga qaytdingiz.")
+        return
+    
+    if data.startswith("os_"):
+        parts = data.split("_")
+        if len(parts) == 3:
+            order_id = int(parts[1])
+            status = parts[2]
+            await db.update_order_status(order_id, status)
+            await query.edit_text(f"✅ Buyurtma №{order_id} statusi o'zgartirildi!")
+            return
+    
+    if data.startswith("assign_"):
+        order_id = int(data.split("_")[1])
+        masters = await db.get_available_masters()
+        if not masters:
+            await query.edit_text("❌ Bo'sh ustalar yo'q!")
+            return
+        
+        await query.edit_text(
+            f"👨‍🔧 Buyurtma №{order_id} uchun ustani tanlang:",
+            reply_markup=master_select_keyboard(order_id, masters)
+        )
+        return
+    
+    if data.startswith("ms_"):
+        parts = data.split("_")
+        order_id = int(parts[1])
+        master_id = int(parts[2])
+        
+        await db.assign_master(order_id, master_id)
+        
+        # Mijozga xabar
+        order = await db.get_order(order_id)
+        if order:
+            try:
+                await context.bot.send_message(
+                    order['client_id'],
+                    f"✅ <b>USTA TAYINLANDI!</b>\n\n"
+                    f"📋 №{order_id}\n"
+                    f"👨‍🔧 Usta tez orada bog'lanadi!",
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.error(f"Mijozga xabar yuborishda xatolik: {e}")
+        
+        await query.edit_text(f"✅ Buyurtma №{order_id} ga usta tayinlandi!")
+        return
+    
+    if data.startswith("rate_"):
+        parts = data.split("_")
+        order_id = int(parts[1])
+        master_id = int(parts[2])
+        rating = int(parts[3])
+        
+        await db.add_rating(order_id, master_id, user_id, rating)
+        await db.update_master_rating(master_id)
+        
+        await query.edit_text(f"⭐ Rahmat! Usta {rating} ga baholandi! ✅")
+        return
+
+# =====================================================
+# UNKNOWN HANDLER
+# =====================================================
+
+async def handle_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "❌ Tushunmadim. Iltimos, tugmalardan foydalaning!\n"
+        "📖 Yordam olish uchun /help",
+        reply_markup=main_menu()
+    )
+
+# =====================================================
+# MAIN FUNCTION
+# =====================================================
+
+async def main():
+    try:
+        if not check_env():
+            sys.exit(1)
+        
+        await db.init_db()
+        logger.info("✅ Database initialized")
+        
+        # Flask serverni alohida thread da ishga tushirish
+        flask_thread = threading.Thread(target=run_flask, daemon=True)
+        flask_thread.start()
+        logger.info(f"✅ Flask server started on port {os.environ.get('PORT', 8080)}")
+        
+        # Application
+        application = ApplicationBuilder().token(BOT_TOKEN).build()
+        logger.info("✅ Application built")
+        
+        # Commands
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("admin", admin_panel))
+        application.add_handler(CommandHandler("stats", stats_command))
+        application.add_handler(CommandHandler("rate", rate_order))
+        
+        # Add master conversation
+        add_master_conv = ConversationHandler(
+            entry_points=[CommandHandler("add_master", add_master_start)],
+            states={
+                ADD_MASTER_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_master_handler)],
+                ADD_MASTER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_master_handler)],
+                ADD_MASTER_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_master_handler)],
+                ADD_MASTER_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_master_handler)],
+                ADD_MASTER_SERVICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_master_handler)],
+            },
+            fallbacks=[CommandHandler("cancel", cancel_add_master)]
+        )
+        application.add_handler(add_master_conv)
+        
+        # Order conversation
+        order_conv = ConversationHandler(
+            entry_points=[MessageHandler(filters.Regex(r'^📝 Buyurtma berish$'), order_start)],
+            states={
+                ORDER_SERVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_service_handler)],
+                ORDER_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_description_handler)],
+                ORDER_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_address_handler)],
+                ORDER_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_confirm_handler)],
+            },
+            fallbacks=[CommandHandler("cancel", cancel_order)]
+        )
+        application.add_handler(order_conv)
+        
+        # Message handlers - Admin
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^👤 Mijozlar bazasi$') & filters.User(ADMIN_ID),
+            clients_list
+        ))
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^👨‍🔧 Ustalar$') & filters.User(ADMIN_ID),
+            masters_list
+        ))
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^➕ Usta qo\'shish$') & filters.User(ADMIN_ID),
+            add_master_start
+        ))
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^📋 Barcha buyurtmalar$') & (filters.User(ADMIN_ID) | filters.User(DISPATCHER_IDS)),
+            all_orders
+        ))
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^📊 Statistika$') & filters.User(ADMIN_ID),
+            stats_command
+        ))
+        
+        # Dispatcher handlers
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^🆕 Yangi buyurtmalar$') & (filters.User(ADMIN_ID) | filters.User(DISPATCHER_IDS)),
+            new_orders
+        ))
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^🟡 Qabul qilish$') & (filters.User(ADMIN_ID) | filters.User(DISPATCHER_IDS)),
+            accept_order
+        ))
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^🚫 Rad etish$') & (filters.User(ADMIN_ID) | filters.User(DISPATCHER_IDS)),
+            reject_order
+        ))
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^👨‍🔧 Usta tanlash$') & (filters.User(ADMIN_ID) | filters.User(DISPATCHER_IDS)),
+            assign_master_order
+        ))
+        
+        # Master handlers
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^🟡 Buyurtmani qabul qilish$'),
+            master_accept_order
+        ))
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^🔵 Ishni boshlash$'),
+            master_start_work
+        ))
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^✅ Ishni yakunlash$'),
+            master_finish_order
+        ))
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^📋 O\'z buyurtmalarim$'),
+            master_my_orders
+        ))
+        
+        # Client handlers
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^📋 Mening buyurtmalarim$'),
+            my_orders
+        ))
+        
+        # Navigation
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^⬅️ Asosiy menyu$'),
+            back_to_main
+        ))
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^⬅️ Admin menyu$'),
+            admin_panel
+        ))
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^ℹ️ Yordam$'),
+            help_command
+        ))
+        
+        # Callback
+        application.add_handler(CallbackQueryHandler(callback_handler))
+        
+        # Unknown
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_unknown
+        ))
+        
+        logger.info("🚀 Bot ishlayapti...")
+        await application.run_polling()
+        
+    except Exception as e:
+        logger.error(f"❌ Error: {e}")
+        sys.exit(1)
 
 # =====================================================
 # RUN BOT
