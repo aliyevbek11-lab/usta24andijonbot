@@ -16,7 +16,11 @@ import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Union
 
-# Telegram kutubxonasi
+# =====================================================
+# TELEGRAM KUTUBXONASI - TO'G'RI VERSION
+# =====================================================
+
+# python-telegram-bot v20+ uchun
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -26,8 +30,7 @@ from telegram import (
     CallbackQuery,
     Message,
     User,
-    ReplyKeyboardRemove,
-    InputFile
+    ReplyKeyboardRemove
 )
 from telegram.ext import (
     Application,
@@ -37,9 +40,12 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
     filters,
-    ConversationHandler,
-    PicklePersistence
+    ConversationHandler
 )
+
+# Agar yuqoridagi ishlamasa, quyidagi eski versiyani sinab ko'ring:
+# from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+# from telegram.ext import Updater, CommandHandler, MessageHandler, CallbackQueryHandler, Filters
 
 # SQLite uchun
 import aiosqlite
@@ -338,34 +344,6 @@ class Database:
             await db.execute("UPDATE masters SET blocked = TRUE WHERE id = ?", (master_id,))
             await db.commit()
 
-    async def search_masters(self, query: str) -> List[Dict]:
-        async with aiosqlite.connect(self.db_name) as db:
-            cursor = await db.execute("""
-                SELECT * FROM masters 
-                WHERE blocked = FALSE AND (
-                    name LIKE ? OR 
-                    services LIKE ? OR 
-                    phone LIKE ? OR 
-                    username LIKE ?
-                )
-                ORDER BY rating DESC
-            """, (f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%"))
-            rows = await cursor.fetchall()
-            
-            masters = []
-            for row in rows:
-                masters.append({
-                    'id': row[0],
-                    'name': row[1],
-                    'phone': row[2],
-                    'username': row[3],
-                    'services': row[4],
-                    'rating': row[5],
-                    'orders_count': row[6],
-                    'status': row[9]
-                })
-            return masters
-
     # ========== МИЖОЗЛАР ==========
     async def add_client(self, client_id: int, name: str, phone: str = "", 
                          username: str = "", address: str = ""):
@@ -424,22 +402,6 @@ class Database:
                 })
             return clients
 
-    async def update_client(self, client_id: int, **kwargs):
-        async with aiosqlite.connect(self.db_name) as db:
-            fields = []
-            values = []
-            for key, value in kwargs.items():
-                fields.append(f"{key} = ?")
-                values.append(value)
-            values.append(client_id)
-            
-            await db.execute(f"""
-                UPDATE clients 
-                SET {', '.join(fields)}, last_active = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, values)
-            await db.commit()
-
     # ========== БУЮРТМАЛАР ==========
     async def add_order(self, client_id: int, service: str, 
                         description: str = "", price: float = 0,
@@ -459,8 +421,6 @@ class Database:
                 (client_id,)
             )
             await db.commit()
-            
-            await self.add_order_history(order_id, "created", client_id, "client", "Буюртма яратилди")
             
             return order_id
 
@@ -492,20 +452,12 @@ class Database:
                 }
             return None
 
-    async def get_orders(self, user_id: int, user_type: str = 'client', 
-                         status: str = None) -> List[Dict]:
+    async def get_orders(self, user_id: int, user_type: str = 'client') -> List[Dict]:
         async with aiosqlite.connect(self.db_name) as db:
             field = 'client_id' if user_type == 'client' else 'master_id'
-            query = f"SELECT * FROM orders WHERE {field} = ?"
-            params = [user_id]
+            query = f"SELECT * FROM orders WHERE {field} = ? ORDER BY created_at DESC"
             
-            if status:
-                query += " AND status = ?"
-                params.append(status)
-            
-            query += " ORDER BY created_at DESC"
-            
-            cursor = await db.execute(query, params)
+            cursor = await db.execute(query, (user_id,))
             rows = await cursor.fetchall()
             
             orders = []
@@ -523,23 +475,15 @@ class Database:
                     'schedule': row[9],
                     'client_phone': row[10],
                     'created_at': row[11],
-                    'updated_at': row[12],
-                    'completed_at': row[13],
-                    'cancelled_at': row[14],
-                    'cancel_reason': row[15]
+                    'updated_at': row[12]
                 })
             return orders
 
-    async def get_all_orders(self, status: str = None) -> List[Dict]:
+    async def get_all_orders(self) -> List[Dict]:
         async with aiosqlite.connect(self.db_name) as db:
-            query = "SELECT * FROM orders"
-            params = []
-            if status:
-                query += " WHERE status = ?"
-                params.append(status)
-            query += " ORDER BY created_at DESC"
-            
-            cursor = await db.execute(query, params)
+            cursor = await db.execute(
+                "SELECT * FROM orders ORDER BY created_at DESC"
+            )
             rows = await cursor.fetchall()
             
             orders = []
@@ -557,51 +501,48 @@ class Database:
                     'schedule': row[9],
                     'client_phone': row[10],
                     'created_at': row[11],
-                    'updated_at': row[12],
-                    'completed_at': row[13],
-                    'cancelled_at': row[14],
-                    'cancel_reason': row[15]
+                    'updated_at': row[12]
                 })
             return orders
 
     async def get_new_orders(self) -> List[Dict]:
-        return await self.get_all_orders(status='yangi')
+        async with aiosqlite.connect(self.db_name) as db:
+            cursor = await db.execute(
+                "SELECT * FROM orders WHERE status = 'yangi' ORDER BY created_at DESC"
+            )
+            rows = await cursor.fetchall()
+            
+            orders = []
+            for row in rows:
+                orders.append({
+                    'id': row[0],
+                    'client_id': row[1],
+                    'master_id': row[2],
+                    'service': row[3],
+                    'description': row[4],
+                    'price': row[5],
+                    'status': row[6],
+                    'priority': row[7],
+                    'address': row[8],
+                    'schedule': row[9],
+                    'client_phone': row[10],
+                    'created_at': row[11],
+                    'updated_at': row[12]
+                })
+            return orders
 
     async def update_order_status(self, order_id: int, status: str, 
                                   reason: str = "", user_id: int = None, 
                                   user_type: str = None):
         async with aiosqlite.connect(self.db_name) as db:
-            updates = {
-                'yangi': "status = 'yangi', updated_at = CURRENT_TIMESTAMP",
-                'qabul_qilingan': "status = 'qabul_qilingan', updated_at = CURRENT_TIMESTAMP",
-                'rad_etilgan': "status = 'rad_etilgan', updated_at = CURRENT_TIMESTAMP, cancelled_at = CURRENT_TIMESTAMP",
-                'jarayonda': "status = 'jarayonda', updated_at = CURRENT_TIMESTAMP",
-                'bajarildi': "status = 'bajarildi', updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP",
-                'yakunlangan': "status = 'yakunlangan', updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP",
-                'bekor_qilindi': f"status = 'bekor_qilindi', updated_at = CURRENT_TIMESTAMP, cancelled_at = CURRENT_TIMESTAMP, cancel_reason = '{reason}'",
-                'tekshiruvda': "status = 'tekshiruvda', updated_at = CURRENT_TIMESTAMP"
-            }
-            
-            if status in updates:
-                await db.execute(f"""
-                    UPDATE orders SET {updates[status]}
-                    WHERE id = ?
-                """, (order_id,))
-                await db.commit()
-                
-                action_map = {
-                    'qabul_qilingan': 'accepted',
-                    'rad_etilgan': 'rejected',
-                    'jarayonda': 'started',
-                    'bajarildi': 'completed',
-                    'yakunlangan': 'finalized',
-                    'bekor_qilindi': 'cancelled',
-                    'tekshiruvda': 'under_review'
-                }
-                action = action_map.get(status, status)
-                await self.add_order_history(order_id, action, user_id or 0, user_type or 'system', reason or status)
+            await db.execute("""
+                UPDATE orders 
+                SET status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (status, order_id))
+            await db.commit()
 
-    async def assign_master(self, order_id: int, master_id: int, user_id: int = None):
+    async def assign_master(self, order_id: int, master_id: int):
         async with aiosqlite.connect(self.db_name) as db:
             await db.execute("""
                 UPDATE orders 
@@ -609,25 +550,6 @@ class Database:
                 WHERE id = ?
             """, (master_id, order_id))
             await db.commit()
-            
-            await self.update_master_status(master_id, 'busy')
-            await self.add_order_history(order_id, 'assigned', user_id or 0, 'admin', f"Уста ID: {master_id}")
-
-    async def reassign_master(self, order_id: int, new_master_id: int, user_id: int = None):
-        async with aiosqlite.connect(self.db_name) as db:
-            order = await self.get_order(order_id)
-            if order and order['master_id']:
-                await self.update_master_status(order['master_id'], 'free')
-            
-            await db.execute("""
-                UPDATE orders 
-                SET master_id = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (new_master_id, order_id))
-            await db.commit()
-            
-            await self.update_master_status(new_master_id, 'busy')
-            await self.add_order_history(order_id, 'reassigned', user_id or 0, 'admin', f"Янги уста ID: {new_master_id}")
 
     async def search_orders(self, query: str) -> List[Dict]:
         async with aiosqlite.connect(self.db_name) as db:
@@ -656,55 +578,6 @@ class Database:
                 })
             return orders
 
-    async def update_order(self, order_id: int, **kwargs):
-        async with aiosqlite.connect(self.db_name) as db:
-            fields = []
-            values = []
-            for key, value in kwargs.items():
-                fields.append(f"{key} = ?")
-                values.append(value)
-            values.append(order_id)
-            
-            await db.execute(f"""
-                UPDATE orders 
-                SET {', '.join(fields)}, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, values)
-            await db.commit()
-
-    # ========== БУЮРТМА ТАРИХИ ==========
-    async def add_order_history(self, order_id: int, action: str, 
-                                user_id: int, user_type: str, 
-                                description: str = ""):
-        async with aiosqlite.connect(self.db_name) as db:
-            await db.execute("""
-                INSERT INTO order_history (order_id, action, user_id, user_type, description)
-                VALUES (?, ?, ?, ?, ?)
-            """, (order_id, action, user_id, user_type, description))
-            await db.commit()
-
-    async def get_order_history(self, order_id: int) -> List[Dict]:
-        async with aiosqlite.connect(self.db_name) as db:
-            cursor = await db.execute("""
-                SELECT * FROM order_history 
-                WHERE order_id = ? 
-                ORDER BY created_at ASC
-            """, (order_id,))
-            rows = await cursor.fetchall()
-            
-            history = []
-            for row in rows:
-                history.append({
-                    'id': row[0],
-                    'order_id': row[1],
-                    'action': row[2],
-                    'user_id': row[3],
-                    'user_type': row[4],
-                    'description': row[5],
-                    'created_at': row[6]
-                })
-            return history
-
     # ========== БАҲОЛАР ==========
     async def add_rating(self, order_id: int, master_id: int, 
                          client_id: int, rating: int, comment: str = ""):
@@ -714,18 +587,6 @@ class Database:
                 VALUES (?, ?, ?, ?, ?)
             """, (order_id, master_id, client_id, rating, comment))
             await db.commit()
-            
-            cursor = await db.execute(
-                "SELECT AVG(rating) FROM ratings WHERE master_id = ?",
-                (master_id,)
-            )
-            avg_rating = await cursor.fetchone()
-            if avg_rating and avg_rating[0]:
-                await db.execute(
-                    "UPDATE masters SET rating = ? WHERE id = ?",
-                    (round(avg_rating[0], 1), master_id)
-                )
-                await db.commit()
 
     async def get_master_rating(self, master_id: int) -> Dict:
         async with aiosqlite.connect(self.db_name) as db:
@@ -757,22 +618,10 @@ class Database:
             orders_count = await db.execute("SELECT COUNT(*) FROM orders")
             orders_count = await orders_count.fetchone()
             
-            status_stats = {}
-            for status in ['yangi', 'qabul_qilingan', 'jarayonda', 'tekshiruvda', 'bajarildi', 'yakunlangan', 'bekor_qilindi', 'rad_etilgan']:
-                cursor = await db.execute(
-                    "SELECT COUNT(*) FROM orders WHERE status = ?",
-                    (status,)
-                )
-                count = await cursor.fetchone()
-                status_stats[status] = count[0]
-            
             today = await db.execute(
                 "SELECT COUNT(*) FROM orders WHERE DATE(created_at) = DATE('now')"
             )
             today = await today.fetchone()
-            
-            avg_rating = await db.execute("SELECT AVG(rating) FROM ratings")
-            avg_rating = await avg_rating.fetchone()
             
             return {
                 'masters': masters_count[0],
@@ -780,9 +629,7 @@ class Database:
                 'busy_masters': busy_masters[0],
                 'clients': clients_count[0],
                 'orders': orders_count[0],
-                'today_orders': today[0],
-                'statuses': status_stats,
-                'avg_rating': round(avg_rating[0] or 0, 1)
+                'today_orders': today[0]
             }
 
     async def get_daily_stats(self) -> Dict:
@@ -804,37 +651,6 @@ class Database:
             return {
                 'today_orders': today_orders[0],
                 'today_completed': today_completed[0]
-            }
-
-    async def get_master_stats(self, master_id: int) -> Dict:
-        async with aiosqlite.connect(self.db_name) as db:
-            master = await self.get_master(master_id)
-            if not master:
-                return {}
-            
-            cursor = await db.execute(
-                "SELECT COUNT(*) FROM orders WHERE master_id = ? AND status = 'yakunlangan'",
-                (master_id,)
-            )
-            completed = await cursor.fetchone()
-            
-            cursor = await db.execute(
-                "SELECT COUNT(*) FROM orders WHERE master_id = ? AND status IN ('yangi', 'qabul_qilingan', 'jarayonda')",
-                (master_id,)
-            )
-            active = await cursor.fetchone()
-            
-            cursor = await db.execute(
-                "SELECT AVG(rating) FROM ratings WHERE master_id = ?",
-                (master_id,)
-            )
-            avg_rating = await cursor.fetchone()
-            
-            return {
-                'total_orders': master['orders_count'],
-                'completed_orders': completed[0],
-                'active_orders': active[0],
-                'rating': avg_rating[0] or 0
             }
 
 # =====================================================
@@ -1020,115 +836,6 @@ def is_admin(user_id: int) -> bool:
 def is_dispatcher(user_id: int) -> bool:
     return user_id in DISPATCHER_IDS
 
-async def send_order_notification(context: ContextTypes.DEFAULT_TYPE, order_id: int):
-    order = await db.get_order(order_id)
-    if not order:
-        return
-    
-    client = await db.get_client(order['client_id'])
-    if not client:
-        return
-    
-    for dispatcher_id in DISPATCHER_IDS:
-        try:
-            await context.bot.send_message(
-                dispatcher_id,
-                f"🆕 <b>ЯНГИ БУЮРТМА!</b>\n\n"
-                f"📋 №{order_id}\n"
-                f"🛠 Хизмат: {order['service']}\n"
-                f"👤 Мижоз: {client['name']}\n"
-                f"📞 Телефон: {client['phone'] or order['client_phone'] or 'йўқ'}\n"
-                f"📍 Манзил: {order['address'] or 'кўрсатилмаган'}\n"
-                f"📝 Изоҳ: {order['description'] or 'йўқ'}\n\n"
-                f"📅 {order['created_at']}",
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton("🟡 Қабул қилиш", callback_data=f"accept_{order_id}"),
-                        InlineKeyboardButton("🚫 Рад этиш", callback_data=f"reject_{order_id}")
-                    ],
-                    [InlineKeyboardButton("👨‍🔧 Уста танлаш", callback_data=f"assign_{order_id}")]
-                ])
-            )
-        except Exception as e:
-            logger.error(f"Хабарнома юборишда хатолик: {e}")
-
-# =====================================================
-# START COMMAND
-# =====================================================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    
-    await db.init_db()
-    
-    client = await db.get_client(user_id)
-    if not client:
-        await db.add_client(
-            user_id,
-            user.full_name,
-            username=user.username or ""
-        )
-    
-    if is_admin(user_id):
-        stats = await db.get_stats()
-        await update.message.reply_text(
-            f"👑 <b>USTA 24 PRO</b>\n"
-            f"Админ панелига хуш келибсиз!\n\n"
-            f"📊 Статистика:\n"
-            f"👨‍🔧 Усталар: {stats['masters']}\n"
-            f"   🟢 Бўш: {stats['free_masters']}\n"
-            f"   🔴 Банд: {stats['busy_masters']}\n"
-            f"👤 Мижозлар: {stats['clients']}\n"
-            f"📋 Буюртмалар: {stats['orders']}\n"
-            f"📅 Бугун: {stats['today_orders']}\n"
-            f"⭐ Ўртача рейтинг: {stats['avg_rating']}",
-            reply_markup=admin_menu(),
-            parse_mode="HTML"
-        )
-        return
-    
-    if is_dispatcher(user_id):
-        await update.message.reply_text(
-            f"👨‍💼 <b>Диспетчер панели</b>\n\n"
-            f"Сизга хуш келибсиз!\n"
-            f"Янги буюртмаларни кўриш учун:\n"
-            f"🆕 Янги буюртмалар",
-            reply_markup=dispatcher_menu(),
-            parse_mode="HTML"
-        )
-        return
-    
-    master = await db.get_master(user_id)
-    if master:
-        status_text = "🟢 Ишда" if master['status'] == 'free' else "🔴 Банд"
-        await update.message.reply_text(
-            f"👨‍🔧 <b>Уста панели</b>\n\n"
-            f"👤 {master['name']}\n"
-            f"⭐ Рейтинг: {master['rating']}\n"
-            f"📊 Ҳолат: {status_text}\n"
-            f"📋 Буюртмалар: {master['orders_count']}\n"
-            f"✅ Бажарган: {master['completed_orders']}\n\n"
-            f"📋 Буюртмалар билан ишлаш учун менюдан фойдаланинг.",
-            reply_markup=master_menu(),
-            parse_mode="HTML"
-        )
-        return
-    
-    await update.message.reply_text(
-        f"👋 <b>Assalomu alaykum, {user.first_name}!</b>\n\n"
-        f"🏠 <b>USTA 24 PRO</b> ботига хуш келибсиз!\n\n"
-        f"🛠 Мен сизга турли хизматларни топишга ёрдам бераман:\n\n"
-        f"✅ Усталарни қидириш\n"
-        f"✅ Буюртма бериш\n"
-        f"✅ Буюртмаларни кузатиш\n"
-        f"✅ Усталарни баҳолаш\n\n"
-        f"🚀 Бошлаш учун тугмалардан фойдаланинг!",
-        reply_markup=main_menu(),
-        parse_mode="HTML"
-    )
-
 # =====================================================
 # MAIN FUNCTION
 # =====================================================
@@ -1137,22 +844,18 @@ async def main():
     try:
         # Базани ишга тушириш
         await db.init_db()
+        logger.info("База ишга тушди")
         
         # Application
         application = ApplicationBuilder().token(BOT_TOKEN).build()
+        logger.info("Application яратилди")
         
         # Commands
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("admin", admin_panel))
-        application.add_handler(CommandHandler("stats", stats))
-        application.add_handler(CommandHandler("report", report))
-        application.add_handler(CommandHandler("order", order_start))
-        application.add_handler(CommandHandler("search", search_order_start))
         
-        # ===== MESSAGE HANDLERS =====
-        
-        # Admin handlers
+        # Message handlers
         application.add_handler(MessageHandler(
             filters.Regex(r'^👤 Мижозлар базаси$') & filters.User(ADMIN_ID),
             clients_list
@@ -1166,24 +869,20 @@ async def main():
             add_master_start
         ))
         application.add_handler(MessageHandler(
-            filters.Regex(r'^🗑 Устани ўчириш$') & filters.User(ADMIN_ID),
-            delete_master_start
-        ))
-        application.add_handler(MessageHandler(
             filters.Regex(r'^📋 Барча буюртмалар$') & (filters.User(ADMIN_ID) | filters.User(DISPATCHER_IDS)),
             all_orders
         ))
         application.add_handler(MessageHandler(
-            filters.Regex(r'^🔎 Буюртма қидириш$') & (filters.User(ADMIN_ID) | filters.User(DISPATCHER_IDS)),
-            search_order_start
-        ))
-        application.add_handler(MessageHandler(
             filters.Regex(r'^📊 Статистика$') & filters.User(ADMIN_ID),
-            stats
+            stats_command
         ))
         application.add_handler(MessageHandler(
             filters.Regex(r'^📈 Ҳисобот$') & filters.User(ADMIN_ID),
-            report
+            report_command
+        ))
+        application.add_handler(MessageHandler(
+            filters.Regex(r'^🆕 Янги буюртмалар$') & (filters.User(ADMIN_ID) | filters.User(DISPATCHER_IDS)),
+            new_orders
         ))
         application.add_handler(MessageHandler(
             filters.Regex(r'^⬅️ Асосий меню$'),
@@ -1198,16 +897,10 @@ async def main():
             help_command
         ))
         
-        # Dispatcher handlers
-        application.add_handler(MessageHandler(
-            filters.Regex(r'^🆕 Янги буюртмалар$') & (filters.User(ADMIN_ID) | filters.User(DISPATCHER_IDS)),
-            new_orders
-        ))
-        
-        # ===== CALLBACK QUERY HANDLER =====
+        # Callback
         application.add_handler(CallbackQueryHandler(callback_handler))
         
-        # ===== UNKNOWN =====
+        # Unknown
         application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             handle_unknown
@@ -1221,8 +914,22 @@ async def main():
         logger.error(f"Bot ishga tushirishda xatolik: {e}")
 
 # =====================================================
-# ADDITIONAL COMMAND HANDLERS
+# COMMAND HANDLERS
 # =====================================================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    
+    await db.init_db()
+    
+    await update.message.reply_text(
+        f"👋 <b>Assalomu alaykum, {user.first_name}!</b>\n\n"
+        f"🏠 <b>USTA 24 PRO</b> ботига хуш келибсиз!\n\n"
+        f"🛠 Мен сизга турли хизматларни топишга ёрдам бераман.",
+        reply_markup=main_menu(),
+        parse_mode="HTML"
+    )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -1247,7 +954,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
     
@@ -1259,16 +966,11 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += f"   🔴 Банд: {stats['busy_masters']}\n"
     text += f"👤 Мижозлар: {stats['clients']}\n"
     text += f"📋 Буюртмалар: {stats['orders']}\n"
-    text += f"📅 Бугун: {stats['today_orders']}\n"
-    text += f"⭐ Ўртача рейтинг: {stats['avg_rating']}\n\n"
-    
-    for status, count in stats['statuses'].items():
-        if count > 0:
-            text += f"{get_status_emoji(status)} {get_status_text(status)}: {count}\n"
+    text += f"📅 Бугун: {stats['today_orders']}"
     
     await update.message.reply_text(text, parse_mode="HTML")
 
-async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
     
@@ -1281,38 +983,11 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += f"👤 Мижозлар: {stats['clients']}\n"
     text += f"📋 Буюртмалар: {stats['orders']}\n"
     text += f"📅 Бугун: {daily['today_orders']}\n"
-    text += f"✅ Якунланган: {daily['today_completed']}\n"
-    text += f"⭐ Ўртача рейтинг: {stats['avg_rating']}"
+    text += f"✅ Якунланган: {daily['today_completed']}"
     
     await update.message.reply_text(text, parse_mode="HTML")
 
-# =====================================================
-# MASTER HANDLERS
-# =====================================================
-
-async def add_master_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    
-    await update.message.reply_text(
-        "➕ <b>USTA QO'SHISH</b>\n\n"
-        "1️⃣ Устанинг Telegram ID рақамини юборинг.",
-        parse_mode="HTML"
-    )
-    return ADD_MASTER_ID
-
-async def delete_master_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    
-    await update.message.reply_text(
-        "🗑 <b>USTA O'CHIRISH</b>\n\n"
-        "Ўчирмоқчи бўлган устанинг ID рақамини юборинг:"
-    )
-
 async def masters_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
     masters = await db.get_all_masters()
     if not masters:
         await update.message.reply_text("👨‍🔧 Ҳозирча усталар йўқ.")
@@ -1324,8 +999,7 @@ async def masters_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += (
             f"{i}️⃣ {status_emoji} <b>{master['name']}</b>\n"
             f"⭐ {master['rating']}\n"
-            f"🛠 {master['services']}\n"
-            f"📋 {master['orders_count']}\n\n"
+            f"🛠 {master['services']}\n\n"
         )
     
     await update.message.reply_text(text, parse_mode="HTML")
@@ -1386,45 +1060,27 @@ async def new_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text, parse_mode="HTML")
 
-async def search_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_master_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    
     await update.message.reply_text(
-        "🔎 <b>BUYURTMA QIDIRISH</b>\n\n"
-        "Буюртма рақамини ёки хизмат номини киритинг:",
+        "➕ <b>USTA QO'SHISH</b>\n\n"
+        "1️⃣ Устанинг Telegram ID рақамини юборинг.",
         parse_mode="HTML"
     )
-    return SEARCH_ORDER_ID
-
-async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📝 <b>BUYURTMA BERISH</b>\n\n"
-        "Қайси хизмат бўйича буюртма бермоқчисиз?\n"
-        "Хизмат номини ёзинг:",
-        parse_mode="HTML"
-    )
-    return ORDER_SERVICE
+    return ADD_MASTER_ID
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     if is_admin(user_id):
         await admin_panel(update, context)
-    elif is_dispatcher(user_id):
-        await update.message.reply_text(
-            "👨‍💼 Диспетчер панели",
-            reply_markup=dispatcher_menu()
-        )
     else:
-        master = await db.get_master(user_id)
-        if master:
-            await update.message.reply_text(
-                "👨‍🔧 Уста панели",
-                reply_markup=master_menu()
-            )
-        else:
-            await update.message.reply_text(
-                "🏠 Бош меню",
-                reply_markup=main_menu()
-            )
+        await update.message.reply_text(
+            "🏠 Бош меню",
+            reply_markup=main_menu()
+        )
 
 # =====================================================
 # CALLBACK HANDLER
@@ -1443,19 +1099,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             order_id = int(parts[1])
             status = parts[2]
             
-            await db.update_order_status(order_id, status, user_id=user_id, user_type='admin')
+            await db.update_order_status(order_id, status)
             await query.edit_text(f"✅ Буюртма №{order_id} статуси ўзгартирилди!")
             return
     
     if data.startswith("accept_"):
         order_id = int(data.split("_")[1])
-        await db.update_order_status(order_id, 'qabul_qilingan', user_id=user_id, user_type='dispatcher')
+        await db.update_order_status(order_id, 'qabul_qilingan')
         await query.edit_text(f"✅ Буюртма №{order_id} қабул қилинди!")
         return
     
     if data.startswith("reject_"):
         order_id = int(data.split("_")[1])
-        await db.update_order_status(order_id, 'rad_etilgan', "Рад этилди", user_id, 'dispatcher')
+        await db.update_order_status(order_id, 'rad_etilgan')
         await query.edit_text(f"🚫 Буюртма №{order_id} рад этилди!")
         return
     
@@ -1477,18 +1133,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order_id = int(parts[1])
         master_id = int(parts[2])
         
-        await db.assign_master(order_id, master_id, user_id)
+        await db.assign_master(order_id, master_id)
         await query.edit_text(f"✅ Буюртма №{order_id} га уста тайинланди!")
-        return
-    
-    if data.startswith("rate_"):
-        parts = data.split("_")
-        order_id = int(parts[1])
-        master_id = int(parts[2])
-        rating = int(parts[3])
-        
-        await db.add_rating(order_id, master_id, user_id, rating)
-        await query.edit_text(f"⭐ Рахмат! Сиз устани {rating} га баҳоладингиз!")
         return
 
 # =====================================================
