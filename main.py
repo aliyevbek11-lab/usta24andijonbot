@@ -227,7 +227,8 @@ async def dispatcher(update,context):
     await update.message.reply_text(
         "👑 USTA 24 АДМИН",
         reply_markup=admin_menu()
-    )# =====================================================
+    )
+# =====================================================
 # MIJOZ BUYURTMA TIZIMI
 # 2-QISM
 # =====================================================
@@ -516,7 +517,8 @@ async def client_handler(update,context):
 
         data["description"]=text
 
-        await create_order(update,context)# =====================================================
+        await create_order(update,context)
+# =====================================================
 # USTALAR TIZIMI
 # 3-QISM
 # =====================================================
@@ -756,7 +758,8 @@ async def order_callback(update, context):
 
                 f"❌ №{oid} буюртма бекор қилинди."
 
-)# =====================================================
+)
+# =====================================================
 # ADMIN BOSHQARUVI
 # 4-QISM
 # =====================================================
@@ -1339,7 +1342,8 @@ async def excel_export(update,context):
         + text[:3500]
 
                 )
-    await update.message.reply_text(result)# =====================================================
+    await update.message.reply_text(result)
+# =====================================================
 # 2-QISM
 # BUYURTMA + USTALAR TIZIMI
 # =====================================================
