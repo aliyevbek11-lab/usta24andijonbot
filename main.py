@@ -110,6 +110,7 @@ class Database:
     async def init_db(self):
         try:
             async with aiosqlite.connect(self.db_name) as db:
+                # Masters table
                 await db.execute("""
                     CREATE TABLE IF NOT EXISTS masters (
                         id INTEGER PRIMARY KEY,
@@ -125,6 +126,7 @@ class Database:
                     )
                 """)
 
+                # Clients table - orders_count maydoni qo'shildi
                 await db.execute("""
                     CREATE TABLE IF NOT EXISTS clients (
                         id INTEGER PRIMARY KEY,
@@ -137,6 +139,7 @@ class Database:
                     )
                 """)
 
+                # Orders table
                 await db.execute("""
                     CREATE TABLE IF NOT EXISTS orders (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,6 +155,7 @@ class Database:
                     )
                 """)
 
+                # Ratings table
                 await db.execute("""
                     CREATE TABLE IF NOT EXISTS ratings (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -280,7 +284,7 @@ class Database:
                 rows = await cursor.fetchall()
                 return [{
                     'id': r[0], 'name': r[1], 'phone': r[2],
-                    'username': r[3], 'address': r[4], 'orders_count': r[5]
+                    'username': r[3], 'address': r[4], 'orders_count': r[5] if len(r) > 5 else 0
                 } for r in rows]
         except Exception as e:
             logger.error(f"Get all clients error: {e}")
@@ -414,6 +418,9 @@ class Database:
                 free_masters = await db.execute("SELECT COUNT(*) FROM masters WHERE status = 'free' AND blocked = FALSE")
                 free_masters = await free_masters.fetchone()
                 
+                busy_masters = await db.execute("SELECT COUNT(*) FROM masters WHERE status = 'busy' AND blocked = FALSE")
+                busy_masters = await busy_masters.fetchone()
+                
                 clients_count = await db.execute("SELECT COUNT(*) FROM clients")
                 clients_count = await clients_count.fetchone()
                 
@@ -428,6 +435,7 @@ class Database:
                 return {
                     'masters': masters_count[0],
                     'free_masters': free_masters[0],
+                    'busy_masters': busy_masters[0] if busy_masters else 0,
                     'clients': clients_count[0],
                     'orders': orders_count[0],
                     'today_orders': today[0]
@@ -600,6 +608,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Admin paneliga xush kelibsiz!\n\n"
             f"📊 Statistika:\n"
             f"👨‍🔧 Ustalar: {stats.get('masters', 0)}\n"
+            f"🟢 Bo'sh: {stats.get('free_masters', 0)}\n"
+            f"🔴 Band: {stats.get('busy_masters', 0)}\n"
             f"👤 Mijozlar: {stats.get('clients', 0)}\n"
             f"📋 Buyurtmalar: {stats.get('orders', 0)}\n"
             f"📅 Bugun: {stats.get('today_orders', 0)}",
@@ -674,10 +684,15 @@ async def masters_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += (
             f"{i}️⃣ {status_emoji} <b>{master['name']}</b>\n"
             f"⭐ {master['rating']}\n"
-            f"🛠 {master['services']}\n\n"
+            f"🛠 {master['services']}\n"
+            f"📋 {master['orders_count']} ta buyurtma\n\n"
         )
     
     await update.message.reply_text(text, parse_mode="HTML")
+
+# =====================================================
+# CLIENTS LIST - 696-QATOR TUZATILDI
+# =====================================================
 
 async def clients_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -691,12 +706,16 @@ async def clients_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "👤 <b>MIJOZLAR</b>\n\n"
     for client in clients[:10]:
         text += (
-            f"👤 {client['name']}\n"
-            f"📞 {client['phone'] or 'yo'q'}\n"
-            f"📋 {client['orders_count']}\n\n"
+            f"👤 {client.get('name', 'Noma\'lum')}\n"
+            f"📞 {client.get('phone', 'yo\'q')}\n"
+            f"📋 {client.get('orders_count', 0)} ta buyurtma\n\n"
         )
     
     await update.message.reply_text(text, parse_mode="HTML")
+
+# =====================================================
+# ALL ORDERS
+# =====================================================
 
 async def all_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     orders = await db.get_all_orders()
@@ -708,10 +727,13 @@ async def all_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "📋 <b>BARCHA BUYURTMALAR</b>\n\n"
     for order in orders[:10]:
         client = await db.get_client(order['client_id'])
+        client_name = client['name'] if client else "Mijoz"
         text += (
             f"№{order['id']} {get_status_emoji(order['status'])}\n"
-            f"👤 {client['name'] if client else 'Mijoz'}\n"
-            f"🛠 {order['service']}\n\n"
+            f"👤 {client_name}\n"
+            f"🛠 {order['service']}\n"
+            f"📍 {order['address'] or 'Manzil yo\'q'}\n"
+            f"📅 {order['created_at'][:10]}\n\n"
         )
     
     await update.message.reply_text(text, parse_mode="HTML")
@@ -726,11 +748,13 @@ async def new_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🆕 <b>YANGI BUYURTMALAR</b>\n\n"
     for order in orders[:10]:
         client = await db.get_client(order['client_id'])
+        client_name = client['name'] if client else "Mijoz"
         text += (
             f"№{order['id']}\n"
-            f"👤 {client['name'] if client else 'Mijoz'}\n"
+            f"👤 {client_name}\n"
             f"🛠 {order['service']}\n"
-            f"📍 {order['address'] or 'yo'q'}\n\n"
+            f"📍 {order['address'] or 'Manzil yo\'q'}\n"
+            f"📞 {order['client_phone'] or 'Telefon yo\'q'}\n\n"
         )
     
     await update.message.reply_text(text, parse_mode="HTML")
@@ -927,10 +951,12 @@ async def master_my_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "📋 <b>O'Z BUYURTMALARIM</b>\n\n"
     for order in orders[:10]:
         client = await db.get_client(order['client_id'])
+        client_name = client['name'] if client else "Mijoz"
         text += (
             f"№{order['id']} {get_status_emoji(order['status'])}\n"
-            f"👤 {client['name'] if client else 'Mijoz'}\n"
-            f"🛠 {order['service']}\n\n"
+            f"👤 {client_name}\n"
+            f"🛠 {order['service']}\n"
+            f"📍 {order['address'] or 'Manzil yo\'q'}\n\n"
         )
     
     await update.message.reply_text(text, parse_mode="HTML")
@@ -953,7 +979,8 @@ async def master_accept_order(update: Update, context: ContextTypes.DEFAULT_TYPE
     text += "Buyurtma raqamini yozing:\n\n"
     for order in pending[:5]:
         client = await db.get_client(order['client_id'])
-        text += f"№{order['id']} - {order['service']} - {client['name'] if client else 'Mijoz'}\n"
+        client_name = client['name'] if client else "Mijoz"
+        text += f"№{order['id']} - {order['service']} - {client_name}\n"
     
     await update.message.reply_text(text, parse_mode="HTML")
     context.user_data['master_accept'] = True
@@ -1008,7 +1035,8 @@ async def master_start_work(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += "Buyurtma raqamini yozing:\n\n"
     for order in pending[:5]:
         client = await db.get_client(order['client_id'])
-        text += f"№{order['id']} - {order['service']} - {client['name'] if client else 'Mijoz'}\n"
+        client_name = client['name'] if client else "Mijoz"
+        text += f"№{order['id']} - {order['service']} - {client_name}\n"
     
     await update.message.reply_text(text, parse_mode="HTML")
     context.user_data['master_start'] = True
@@ -1063,7 +1091,8 @@ async def master_finish_order(update: Update, context: ContextTypes.DEFAULT_TYPE
     text += "Buyurtma raqamini yozing:\n\n"
     for order in completed[:5]:
         client = await db.get_client(order['client_id'])
-        text += f"№{order['id']} - {order['service']} - {client['name'] if client else 'Mijoz'}\n"
+        client_name = client['name'] if client else "Mijoz"
+        text += f"№{order['id']} - {order['service']} - {client_name}\n"
     
     await update.message.reply_text(text, parse_mode="HTML")
     context.user_data['master_finish'] = True
