@@ -2025,7 +2025,8 @@ async def master_state_handler(update, context):
             context
         )
 
-        return# =====================================================
+        return
+# =====================================================
 # USTA 24 PRO BOT
 # MAIN.PY 3-QISM
 # BUYURTMALAR + DISPETCHER + USTA BOSHQARUVI
@@ -2884,7 +2885,9 @@ async def dispatcher_callback(update, context):
             context
         )
 
-        return # =====================================================
+        return 
+
+# =====================================================
 # USTA 24 PRO BOT
 # MAIN.PY 4-QISM
 # HANDLERS + ADMIN + START
