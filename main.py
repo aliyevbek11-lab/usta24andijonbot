@@ -1593,8 +1593,6 @@ if __name__ == "__main__":
 
 
 
-    # USTA BUTTON
-
     application.add_handler(
 
         CallbackQueryHandler(
