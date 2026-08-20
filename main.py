@@ -1428,3 +1428,611 @@ async def dispatcher_callback(update, context):
         )
 
         return
+# =====================================================
+# USTA 24 PRO BOT
+# MAIN.PY 4-QISM
+# HANDLERS + ADMIN + START
+# =====================================================
+
+
+# =====================================================
+# /SEND — XABAR TARQATISH
+# =====================================================
+
+async def send_command(update, context):
+
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text(
+            "❌ Сиз админ эмассиз."
+        )
+        return
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "📢 ХАБАР ТАРҚАТИШ\n\n"
+            "Формат:\n"
+            "/send Хабар матни"
+        )
+
+        return
+
+    msg = " ".join(context.args)
+
+    # orders ичидаги уникал мижозлар
+    customer_ids = set()
+
+    for order in orders.values():
+
+        if order.get("customer_id"):
+            customer_ids.add(
+                order["customer_id"]
+            )
+
+    count = 0
+
+    for customer_id in customer_ids:
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=customer_id,
+                text=msg
+            )
+
+            count += 1
+
+        except Exception as e:
+
+            logger.error(
+                f"Xabar yuborilmadi {customer_id}: {e}"
+            )
+
+    await update.message.reply_text(
+
+        "📢 ХАБАР ЮБОРИЛДИ\n\n"
+        f"👥 {count} та мижозга юборилди."
+
+    )
+
+
+# =====================================================
+# ADMIN BUTTONLARI
+# =====================================================
+
+async def admin_button_handler(
+    update,
+    context
+):
+
+    if not update.message:
+        return False
+
+    if update.effective_user.id != ADMIN_ID:
+        return False
+
+    text = update.message.text or ""
+
+    # -------------------------------------------------
+    # MIJOZLAR
+    # -------------------------------------------------
+
+    if text == "👤 Мижозлар":
+
+        await customer_base(
+            update,
+            context
+        )
+
+        return True
+
+
+    # -------------------------------------------------
+    # USTALAR
+    # -------------------------------------------------
+
+    if text == "👨‍🔧 Усталар":
+
+        await update.message.reply_text(
+            "👨‍🔧 УСТАЛАР БОШҚАРУВИ",
+            reply_markup=masters_menu()
+        )
+
+        return True
+
+
+    # -------------------------------------------------
+    # USTA QO'SHISH
+    # -------------------------------------------------
+
+    if text == "➕ Уста қўшиш":
+
+        await add_master_start(
+            update,
+            context
+        )
+
+        return True
+
+
+    # -------------------------------------------------
+    # USTALAR RO'YXATI
+    # -------------------------------------------------
+
+    if text == "👨‍🔧 Усталар рўйхати":
+
+        await masters_list(
+            update,
+            context
+        )
+
+        return True
+
+
+    # -------------------------------------------------
+    # USTA O'CHIRISH
+    # -------------------------------------------------
+
+    if text == "🗑 Устани ўчириш":
+
+        await delete_master_start(
+            update,
+            context
+        )
+
+        return True
+
+
+    # -------------------------------------------------
+    # STATISTIKA
+    # -------------------------------------------------
+
+    if text == "📊 Статистика":
+
+        await statistics(
+            update,
+            context
+        )
+
+        return True
+
+
+    # -------------------------------------------------
+    # XABAR
+    # -------------------------------------------------
+
+    if text == "📢 Хабар тарқатиш":
+
+        await update.message.reply_text(
+
+            "📢 ХАБАР ТАРҚАТИШ\n\n"
+            "Формат:\n"
+            "/send Хабар матни"
+
+        )
+
+        return True
+
+
+    # -------------------------------------------------
+    # ADMIN MENUGA QAYTISH
+    # -------------------------------------------------
+
+    if text == "⬅️ Админ меню":
+
+        await update.message.reply_text(
+
+            "👑 USTA 24 АДМИН\n\n"
+            "Бўлимни танланг:",
+
+            reply_markup=admin_menu()
+        )
+
+        return True
+
+
+    # -------------------------------------------------
+    # BOSH MENU
+    # -------------------------------------------------
+
+    if text == "⬅️ Бош меню":
+
+        await update.message.reply_text(
+
+            "🏠 USTA 24\n\n"
+            "Асосий меню:",
+
+            reply_markup=client_menu()
+        )
+
+        return True
+
+
+    return False
+
+
+# =====================================================
+# USTA / ADMIN / CLIENT TEXT HANDLER
+# =====================================================
+
+async def all_text_handler(
+    update,
+    context
+):
+
+    if not update.message:
+        return
+
+    uid = update.effective_user.id
+
+    text = update.message.text or ""
+
+
+    # =================================================
+    # ADMIN
+    # =================================================
+
+    if uid == ADMIN_ID:
+
+        # Уста қўшиш жараёни
+        if context.user_data.get(
+            "master_add"
+        ):
+
+            await add_master_handler(
+                update,
+                context
+            )
+
+            return
+
+
+        # Уста ўчириш жараёни
+        if context.user_data.get(
+            "delete_master"
+        ):
+
+            await delete_master_handler(
+                update,
+                context
+            )
+
+            return
+
+
+        # Admin tugmalari
+        handled = await admin_button_handler(
+            update,
+            context
+        )
+
+        if handled:
+            return
+
+
+    # =================================================
+    # CLIENT BUYURTMA
+    # =================================================
+
+    await client_handler(
+        update,
+        context
+    )
+
+
+# =====================================================
+# CONTACT / LOCATION
+# =====================================================
+
+async def contact_location_handler(
+    update,
+    context
+):
+
+    if not update.message:
+        return
+
+    # Фақат мижоз буюртма жараёнига бериш
+    await client_handler(
+        update,
+        context
+    )
+
+
+# =====================================================
+# CALLBACK ROUTER
+# =====================================================
+
+async def callback_router(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    if not query:
+        return
+
+    data = query.data or ""
+
+
+    # -------------------------------------------------
+    # DISPETCHER
+    # -------------------------------------------------
+
+    if data.startswith("assign_"):
+
+        await dispatcher_callback(
+            update,
+            context
+        )
+
+        return
+
+
+    if data.startswith("master_"):
+
+        await dispatcher_callback(
+            update,
+            context
+        )
+
+        return
+
+
+    # -------------------------------------------------
+    # BUYURTMA
+    # -------------------------------------------------
+
+    if data.startswith("accept_"):
+        await dispatcher_callback(
+            update,
+            context
+        )
+        return
+
+
+    if data.startswith("reject_"):
+        await dispatcher_callback(
+            update,
+            context
+        )
+        return
+
+
+    if data.startswith("start_"):
+        await dispatcher_callback(
+            update,
+            context
+        )
+        return
+
+
+    if data.startswith("done_"):
+        await dispatcher_callback(
+            update,
+            context
+        )
+        return
+
+
+    if data.startswith("cancel_"):
+        await dispatcher_callback(
+            update,
+            context
+        )
+        return
+
+
+    if data.startswith("redispatch_"):
+        await dispatcher_callback(
+            update,
+            context
+        )
+        return
+
+
+    # -------------------------------------------------
+    # REVIEW
+    # -------------------------------------------------
+
+    if data.startswith("review_"):
+        await dispatcher_callback(
+            update,
+            context
+        )
+        return
+
+
+    if data.startswith("rate_"):
+        await dispatcher_callback(
+            update,
+            context
+        )
+        return
+
+
+# =====================================================
+# ERROR HANDLER
+# =====================================================
+
+async def error_handler(
+    update,
+    context
+):
+
+    logger.error(
+        "Bot error:",
+        exc_info=context.error
+    )
+
+
+# =====================================================
+# MAIN
+# =====================================================
+
+def main():
+
+    application = (
+        Application
+        .builder()
+        .token(TOKEN)
+        .build()
+    )
+
+
+    # =================================================
+    # /START
+    # =================================================
+
+    application.add_handler(
+
+        CommandHandler(
+            "start",
+            start
+        )
+
+    )
+
+
+    # =================================================
+    # /ADMIN
+    # =================================================
+
+    application.add_handler(
+
+        CommandHandler(
+            "admin",
+            admin_start
+        )
+
+    )
+
+
+    # =================================================
+    # /SEND
+    # =================================================
+
+    application.add_handler(
+
+        CommandHandler(
+            "send",
+            send_command
+        )
+
+    )
+
+
+    # =================================================
+    # CALLBACK
+    # =================================================
+
+    application.add_handler(
+
+        CallbackQueryHandler(
+            callback_router
+        )
+
+    )
+
+
+    # =================================================
+    # CONTACT
+    # =================================================
+
+    application.add_handler(
+
+        MessageHandler(
+
+            filters.CONTACT,
+            contact_location_handler
+
+        )
+
+    )
+
+
+    # =================================================
+    # LOCATION
+    # =================================================
+
+    application.add_handler(
+
+        MessageHandler(
+
+            filters.LOCATION,
+            contact_location_handler
+
+        )
+
+    )
+
+
+    # =================================================
+    # TEXT
+    # =================================================
+
+    application.add_handler(
+
+        MessageHandler(
+
+            filters.TEXT
+            & ~filters.COMMAND,
+
+            all_text_handler
+
+        )
+
+    )
+
+
+    # =================================================
+    # ERROR
+    # =================================================
+
+    application.add_error_handler(
+        error_handler
+    )
+
+
+    # =================================================
+    # FLASK / RENDER
+    # =================================================
+
+    Thread(
+
+        target=run_flask,
+        daemon=True
+
+    ).start()
+
+
+    # =================================================
+    # START BOT
+    # =================================================
+
+    print(
+        "===================================="
+    )
+
+    print(
+        "USTA 24 BOT ISHLADI"
+    )
+
+    print(
+        "===================================="
+    )
+
+
+    application.run_polling(
+        drop_pending_updates=True
+    )
+
+
+# =====================================================
+# START
+# =====================================================
+
+if __name__ == "__main__":
+
+    main()
