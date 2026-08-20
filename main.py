@@ -1,4 +1,4 @@
-# =====================================================
+    # =====================================================
 # USTA 24 BOT
 # MAIN.PY 1/2
 # Мижоз + Буюртма тизими
@@ -8,7 +8,6 @@ import os
 import logging
 from datetime import datetime
 from threading import Thread
-
 from flask import Flask
 
 from telegram import (
@@ -34,22 +33,22 @@ from telegram.ext import (
 # ==========================
 
 TOKEN = os.getenv("BOT_TOKEN")
-MASTERS_GROUP_ID = os.getenv("MASTERS_GROUP_ID")
 ADMIN_ID = os.getenv("ADMIN_ID")
+MASTERS_GROUP_ID = os.getenv("MASTERS_GROUP_ID")
 
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN топилмади")
 
-if not MASTERS_GROUP_ID:
-    raise RuntimeError("MASTERS_GROUP_ID топилмади")
-
 if not ADMIN_ID:
     raise RuntimeError("ADMIN_ID топилмади")
 
+if not MASTERS_GROUP_ID:
+    raise RuntimeError("MASTERS_GROUP_ID топилмади")
 
-MASTERS_GROUP_ID = int(MASTERS_GROUP_ID)
+
 ADMIN_ID = int(ADMIN_ID)
+MASTERS_GROUP_ID = int(MASTERS_GROUP_ID)
 
 
 logging.basicConfig(
@@ -70,7 +69,6 @@ def home():
     return "USTA 24 ишлаяпти"
 
 
-
 @app.route("/health")
 def health():
     return "OK"
@@ -86,7 +84,6 @@ def run_flask():
 
 
 
-
 # ==========================
 # БАЗА
 # ==========================
@@ -95,10 +92,8 @@ users = {}
 orders = {}
 masters = {}
 reviews = {}
-prices = {}
 
 order_id = 0
-
 
 
 
@@ -133,9 +128,8 @@ SERVICES = [
 
 
 
-
 # ==========================
-# МЕНЮ
+# МЕНЮЛАР
 # ==========================
 
 
@@ -144,17 +138,14 @@ def мижоз_меню():
     return ReplyKeyboardMarkup(
 
         [
-
             ["📝 Буюртма бериш"],
             ["📋 Хизматлар"],
             ["🔁 Қайта буюртма"]
-
         ],
 
         resize_keyboard=True
 
     )
-
 
 
 
@@ -170,18 +161,16 @@ def хизмат_меню():
 
 
 
-
-
 # ==========================
 # START
 # ==========================
 
-async def start(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
+async def start(update,context):
 
     await update.message.reply_text(
 
-        "👋 Ассалому алайкум!\n\n"
+        "👋 Ассалому алайкум\n\n"
         "🏠 USTA 24 хизматлари\n\n"
         "Керакли бўлимни танланг:",
 
@@ -191,15 +180,12 @@ async def start(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
 
 
-
-
 # ==========================
 # БУЮРТМА БОШЛАШ
 # ==========================
 
 
 async def янги_буюртма(update,context):
-
 
     uid = update.effective_user.id
 
@@ -216,7 +202,6 @@ async def янги_буюртма(update,context):
     }
 
 
-
     await update.message.reply_text(
 
         "📝 Буюртма бериш\n\n"
@@ -227,14 +212,12 @@ async def янги_буюртма(update,context):
 
 
 
-
 # ==========================
 # МИЖОЗ ХАБАРЛАРИ
 # ==========================
 
 
-async def мижоз_хабар(update,context):
-
+async def message_handler(update,context):
 
     if not update.message:
         return
@@ -255,6 +238,7 @@ async def мижоз_хабар(update,context):
 
 
     if uid not in users:
+
         return
 
 
@@ -263,13 +247,11 @@ async def мижоз_хабар(update,context):
 
 
 
-    if data["қадам"] == "исм":
+    if data["қадам"]=="исм":
 
-
-        data["исм"] = text
+        data["исм"]=text
 
         data["қадам"]="телефон"
-
 
 
         тугма = KeyboardButton(
@@ -295,35 +277,11 @@ async def мижоз_хабар(update,context):
 
         )
 
-
-        return
-    # =====================================================
-# USTA 24 BOT
-# MAIN.PY 2/2
-# Уста + Админ + Ишга тушириш
-# =====================================================
-
-
-
-# ==========================
-# МИЖОЗ БУЮРТМА ДАВОМИ
-# ==========================
-
-
-async def давомий_буюртма(update,context):
-
-    uid = update.effective_user.id
-
-
-    if uid not in users:
         return
 
 
-    data = users[uid]
 
-
-    if data["қадам"] == "телефон":
-
+    if data["қадам"]=="телефон":
 
         if update.message.contact:
 
@@ -331,12 +289,10 @@ async def давомий_буюртма(update,context):
 
         else:
 
-            data["телефон"] = update.message.text
-
+            data["телефон"] = text
 
 
         data["қадам"]="хизмат"
-
 
 
         await update.message.reply_text(
@@ -347,18 +303,15 @@ async def давомий_буюртма(update,context):
 
         )
 
-
         return
 
 
 
-    if data["қадам"] == "хизмат":
+    if data["қадам"]=="хизмат":
 
-
-        data["хизмат"]=update.message.text
+        data["хизмат"]=text
 
         data["қадам"]="манзил"
-
 
 
         тугма = KeyboardButton(
@@ -387,70 +340,13 @@ async def давомий_буюртма(update,context):
 
         )
 
-
         return
 
-
-
-
-    if data["қадам"] == "манзил":
-
-
-        if update.message.location:
-
-            data["манзил"]=(
-
-                f"{update.message.location.latitude}, "
-                f"{update.message.location.longitude}"
-
-            )
-
-        else:
-
-            data["манзил"]=update.message.text
-
-
-
-        data["қадам"]="изоҳ"
-
-
-
-        await update.message.reply_text(
-
-            "📝 Буюртма ҳақида ёзинг:"
-
-        )
-
-
-        return
-
-
-
-
-
-    if data["қадам"] == "изоҳ":
-
-
-        data["изоҳ"]=update.message.text
-
-
-        await яратиш(
-
-            update,
-
-            context,
-
-            data
-
-        )
-
-
-        users.pop(uid)
-
-
-
-
-
+# =====================================================
+# USTA 24 BOT
+# MAIN.PY 2/2
+# Уста + Админ + Ишга тушириш
+# =====================================================
 
 
 # ==========================
@@ -458,69 +354,73 @@ async def давомий_буюртма(update,context):
 # ==========================
 
 
-async def яратиш(update,context,data):
+async def create_order(update, context):
 
     global order_id
 
 
-    order_id += 1
+    uid = update.effective_user.id
 
+    data = users[uid]
+
+
+    order_id += 1
 
     oid = order_id
 
 
 
-    orders[oid]={
+    orders[oid] = {
 
-        "id":oid,
+        "id": oid,
 
-        "мижоз":update.effective_user.id,
+        "мижоз": uid,
 
-        "исм":data["исм"],
+        "исм": data["исм"],
 
-        "телефон":data["телефон"],
+        "телефон": data["телефон"],
 
-        "хизмат":data["хизмат"],
+        "хизмат": data["хизмат"],
 
-        "манзил":data["манзил"],
+        "манзил": data["манзил"],
 
-        "изоҳ":data["изоҳ"],
+        "изоҳ": data["изоҳ"],
 
-        "ҳолат":"янги",
+        "ҳолат": "янги",
 
-        "уста":None,
+        "уста": None,
 
-        "вақт":datetime.now()
+        "вақт": datetime.now()
 
     }
 
 
 
-    тугмалар = InlineKeyboardMarkup(
+    тугма = InlineKeyboardMarkup(
 
         [
 
             [
 
-            InlineKeyboardButton(
+                InlineKeyboardButton(
 
-                "✅ Қабул қилиш",
+                    "🟡 Қабул қилиш",
 
-                callback_data=f"qabul_{oid}"
+                    callback_data=f"accept_{oid}"
 
-            )
+                )
 
             ],
 
             [
 
-            InlineKeyboardButton(
+                InlineKeyboardButton(
 
-                "🚫 Рад этиш",
+                    "🚫 Рад этиш",
 
-                callback_data=f"rad_{oid}"
+                    callback_data=f"reject_{oid}"
 
-            )
+                )
 
             ]
 
@@ -534,7 +434,7 @@ async def яратиш(update,context,data):
 
         "🆕 Янги буюртма\n\n"
 
-        f"🔢 Рақам: №{oid}\n"
+        f"🔢 №{oid}\n"
 
         f"👤 Мижоз: {data['исм']}\n"
 
@@ -556,7 +456,7 @@ async def яратиш(update,context,data):
 
         text=хабар,
 
-        reply_markup=тугмалар
+        reply_markup=тугма
 
     )
 
@@ -564,8 +464,9 @@ async def яратиш(update,context,data):
 
     await update.message.reply_text(
 
-        f"✅ Буюртмангиз қабул қилинди\n"
-        f"🔢 №{oid}",
+        f"✅ Буюртма қабул қилинди\n\n"
+        f"🔢 №{oid}\n"
+        "👨‍🔧 Усталарга юборилди",
 
         reply_markup=мижоз_меню()
 
@@ -573,6 +474,79 @@ async def яратиш(update,context,data):
 
 
 
+    users.pop(uid)
+
+
+
+# ==========================
+# МАНЗИЛ ВА ИЗОҲ
+# ==========================
+
+
+async def extra_handler(update,context):
+
+
+    uid = update.effective_user.id
+
+
+    if uid not in users:
+        return
+
+
+
+    data = users[uid]
+
+    text = update.message.text or ""
+
+
+
+    if data["қадам"]=="манзил":
+
+
+        if update.message.location:
+
+            data["манзил"] = (
+
+                f"{update.message.location.latitude},"
+                f"{update.message.location.longitude}"
+
+            )
+
+        else:
+
+            data["манзил"] = text
+
+
+
+        data["қадам"]="изоҳ"
+
+
+        await update.message.reply_text(
+
+            "📝 Буюртма ҳақида ёзинг:"
+
+        )
+
+        return
+
+
+
+
+    if data["қадам"]=="изоҳ":
+
+
+        data["изоҳ"]=text
+
+
+        await create_order(
+
+            update,
+
+            context
+
+        )
+
+        return
 
 
 
@@ -583,10 +557,10 @@ async def яратиш(update,context,data):
 # ==========================
 
 
-async def уста_тугма(update,context):
+async def order_button(update,context):
 
 
-    query=update.callback_query
+    query = update.callback_query
 
     await query.answer()
 
@@ -595,21 +569,24 @@ async def уста_тугма(update,context):
 
 
 
-    if data.startswith("qabul_"):
+    oid=int(data.split("_")[1])
 
 
-        oid=int(data.split("_")[1])
+    order=orders.get(oid)
 
 
-        if oid not in orders:
-            return
+    if not order:
+        return
 
+
+
+    if data.startswith("accept_"):
 
 
         user=query.from_user
 
 
-        уста=(
+        master=(
 
             f"@{user.username}"
 
@@ -620,9 +597,10 @@ async def уста_тугма(update,context):
         )
 
 
-        orders[oid]["ҳолат"]="қабул қилинган"
 
-        orders[oid]["уста"]=уста
+        order["ҳолат"]="қабул қилинган"
+
+        order["уста"]=master
 
 
 
@@ -631,36 +609,32 @@ async def уста_тугма(update,context):
             "🟡 Қабул қилинди\n\n"
 
             f"№{oid}\n"
-            f"👨‍🔧 Уста: {уста}"
+            f"👨‍🔧 Уста: {master}"
 
         )
 
 
         await context.bot.send_message(
 
-            orders[oid]["мижоз"],
+            order["мижоз"],
 
             f"🟡 №{oid} буюртмангиз қабул қилинди\n"
-            f"👨‍🔧 Уста: {уста}"
+            f"👨‍🔧 Уста: {master}"
 
         )
 
 
 
 
-
-    elif data.startswith("rad_"):
-
-
-        oid=int(data.split("_")[1])
+    elif data.startswith("reject_"):
 
 
-        orders[oid]["ҳолат"]="рад этилди"
+        order["ҳолат"]="рад этилган"
 
 
         await query.edit_message_text(
 
-            f"🚫 №{oid} рад этилди"
+            f"🚫 №{oid} буюртма рад этилди"
 
         )
 
@@ -668,23 +642,25 @@ async def уста_тугма(update,context):
 
 
 
-
 # ==========================
-# ADMIN
+# АДМИН
 # ==========================
 
 
-async def админ(update,context):
+async def admin(update,context):
+
 
     if update.effective_user.id != ADMIN_ID:
         return
 
 
+
     await update.message.reply_text(
 
-        "👑 USTA 24 Админ\n\n"
-        "📊 /stat\n"
-        "👨‍🔧 /ustalar"
+        "👑 USTA 24 АДМИН\n\n"
+        "/stat - статистика\n"
+        "/mijoz - мижозлар\n"
+        "/ustalar - усталар"
 
     )
 
@@ -692,16 +668,19 @@ async def админ(update,context):
 
 
 
-async def stat(update,context):
+async def statistic(update,context):
+
 
     if update.effective_user.id != ADMIN_ID:
         return
 
 
+
     await update.message.reply_text(
 
-        "📊 Статистика\n\n"
-        f"Жами буюртмалар: {len(orders)}"
+        "📊 ТЎЛИҚ СТАТИСТИКА\n\n"
+
+        f"📋 Жами буюртма: {len(orders)}"
 
     )
 
@@ -709,22 +688,49 @@ async def stat(update,context):
 
 
 
+async def customers(update,context):
+
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+
+
+    text="👤 МИЖОЗЛАР\n\n"
+
+
+    for o in orders.values():
+
+        text += (
+
+            f"👤 {o['исм']}\n"
+            f"📞 {o['телефон']}\n"
+            "────────\n"
+
+        )
+
+
+    await update.message.reply_text(text)
+
+
+
+
 
 # ==========================
-# MAIN
+# ИШГА ТУШИРИШ
 # ==========================
 
 
 def main():
 
 
-    bot = Application.builder()\
+    application = Application.builder()\
         .token(TOKEN)\
         .build()
 
 
 
-    bot.add_handler(
+    application.add_handler(
 
         CommandHandler(
 
@@ -737,77 +743,91 @@ def main():
     )
 
 
-    bot.add_handler(
+    application.add_handler(
 
         CommandHandler(
 
             "admin",
 
-            админ
+            admin
 
         )
 
     )
 
 
-    bot.add_handler(
+    application.add_handler(
 
         CommandHandler(
 
             "stat",
 
-            stat
+            statistic
 
         )
 
     )
 
 
-    bot.add_handler(
+    application.add_handler(
+
+        CommandHandler(
+
+            "mijoz",
+
+            customers
+
+        )
+
+    )
+
+
+
+    application.add_handler(
 
         CallbackQueryHandler(
 
-            уста_тугма
+            order_button
 
         )
 
     )
 
 
-    bot.add_handler(
+    application.add_handler(
 
         MessageHandler(
 
             filters.CONTACT |
             filters.LOCATION,
 
-            давомий_буюртма
+            message_handler
 
         )
 
     )
 
 
-    bot.add_handler(
+    application.add_handler(
 
         MessageHandler(
 
             filters.TEXT,
 
-            мижоз_хабар
+            message_handler
 
         )
 
     )
 
 
-    bot.add_handler(
+    application.add_handler(
 
         MessageHandler(
 
             filters.TEXT,
 
-            давомий_буюртма
+            extra_handler
 
         )
 
@@ -815,7 +835,7 @@ def main():
 
 
 
-    bot.run_polling()
+    application.run_polling()
 
 
 
