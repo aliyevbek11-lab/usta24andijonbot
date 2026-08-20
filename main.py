@@ -1391,6 +1391,8 @@ async def broadcast(update,context):
         f"📢 Хабар юборилди\n"
 
         f"👥 {count} та мижоз"
+
+    )  
 # =====================================================
 # MAIN.PY 5/5
 # HANDLERS + START
