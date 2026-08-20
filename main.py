@@ -209,6 +209,8 @@ async def start(update:Update, context:ContextTypes.DEFAULT_TYPE):
         reply_markup=client_menu()
 
     )
+
+
 # =====================================================
 # MIJOZ BUYURTMA TIZIMI
 # 2-QISM
@@ -263,13 +265,11 @@ async def message_handler(update, context):
 
 
     if user.id not in user_state:
-
         return
 
 
 
     data = user_state[user.id]
-
     step = data["step"]
 
 
