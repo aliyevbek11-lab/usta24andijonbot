@@ -1438,7 +1438,46 @@ async def button_handler(update,context):
 
 
 
-async def send_command(update,context):
+async def button_handler(update,context):
+
+    if not update.message:
+        return
+
+
+    text = update.message.text or ""
+
+
+    # АДМИН БЎЛИМЛАРИ
+
+    if update.effective_user.id == ADMIN_ID:
+
+
+        if text == "👤 Мижоз базаси":
+            await customer_base(update,context)
+            return
+
+
+        if text == "👨‍🔧 Усталар":
+            await masters_list(update,context)
+            return
+
+
+        if text == "📊 Статистика":
+            await statistics(update,context)
+            return
+
+
+        if text == "📢 Хабар тарқатиш":
+            await update.message.reply_text(
+                "Формат:\n/send матн"
+            )
+            return
+
+
+
+    # МИЖОЗ БУЮРТМАСИ
+
+    await client_handler(update,context)
 
 
     await broadcast(update,context)
