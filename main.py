@@ -1527,31 +1527,69 @@ def main():
 
     # ADMIN
 
+    def main():
+
+    application = Application.builder()\
+        .token(TOKEN)\
+        .build()
+
+
     application.add_handler(
-
         CommandHandler(
+            "start",
+            start
+        )
+    )
 
+
+    application.add_handler(
+        CommandHandler(
             "admin",
-
             admin_start
-
         )
-
     )
-
 
 
     application.add_handler(
-
         CommandHandler(
-
             "send",
-
             send_command
-
         )
-
     )
+
+
+    application.add_handler(
+        CallbackQueryHandler(
+            order_callback
+        )
+    )
+
+
+    application.add_handler(
+        MessageHandler(
+            filters.CONTACT |
+            filters.LOCATION |
+            filters.TEXT,
+            button_handler
+        )
+    )
+
+
+    Thread(
+        target=run_flask,
+        daemon=True
+    ).start()
+
+
+    print("USTA 24 BOT ISHLADI")
+
+
+    application.run_polling()
+
+
+
+if __name__ == "__main__":
+    main()
 
 
 
