@@ -1527,7 +1527,7 @@ def main():
 
     # ADMIN
 
-    def main():
+  def main():
 
     application = Application.builder()\
         .token(TOKEN)\
