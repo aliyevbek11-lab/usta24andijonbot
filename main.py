@@ -767,3 +767,1481 @@ async def create_order(
 
         reply_markup=client_menu(),
             )
+# =====================================================
+# MAIN.PY — 2/2
+# DISPETCHER + USTA + ADMIN
+# =====================================================
+
+
+# =====================================================
+# BUYURTMA MATNI
+# =====================================================
+
+def order_text(order):
+
+    master = order.get("master") or "Ҳали бириктирилмаган"
+
+    status = STATUS.get(
+        order.get("status"),
+        order.get("status")
+    )
+
+    return (
+        "📋 БУЮРТМА\n\n"
+        f"🔢 Буюртма: №{order['id']}\n"
+        f"👤 Мижоз: {order['name']}\n"
+        f"📞 Телефон: {order['phone']}\n"
+        f"🛠 Хизмат: {order['service']}\n"
+        f"📍 Манзил: {order['address']}\n"
+        f"📝 Изоҳ: {order['comment']}\n\n"
+        f"👨‍🔧 Уста: {master}\n"
+        f"📌 Ҳолат: {status}"
+    )
+
+
+# =====================================================
+# DISPETCHER BUYURTMA TUGMALARI
+# =====================================================
+
+def dispatcher_order_keyboard(oid):
+
+    return InlineKeyboardMarkup([
+
+        [
+            InlineKeyboardButton(
+                "🟡 Қабул қилиш",
+                callback_data=f"da_{oid}"
+            ),
+            InlineKeyboardButton(
+                "🚫 Рад этиш",
+                callback_data=f"dr_{oid}"
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                "👨‍🔧 Уста танлаш",
+                callback_data=f"dm_{oid}"
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                "📞 Мижоз билан боғланиш",
+                callback_data=f"dc_{oid}"
+            )
+        ]
+
+    ])
+
+
+# =====================================================
+# USTA TUGMALARI
+# =====================================================
+
+def master_order_keyboard(oid, status):
+
+    if status == "new":
+
+        return InlineKeyboardMarkup([
+
+            [
+                InlineKeyboardButton(
+                    "🟡 Қабул қилиш",
+                    callback_data=f"ua_{oid}"
+                ),
+                InlineKeyboardButton(
+                    "🚫 Рад этиш",
+                    callback_data=f"ur_{oid}"
+                )
+            ]
+
+        ])
+
+
+    if status == "accepted":
+
+        return InlineKeyboardMarkup([
+
+            [
+                InlineKeyboardButton(
+                    "🔵 Ишни бошлаш",
+                    callback_data=f"us_{oid}"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "🔄 Бошқа устага бериш",
+                    callback_data=f"ub_{oid}"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "📞 Мижоз билан боғланиш",
+                    callback_data=f"uc_{oid}"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "❌ Бекор қилиш",
+                    callback_data=f"ux_{oid}"
+                )
+            ]
+
+        ])
+
+
+    if status == "process":
+
+        return InlineKeyboardMarkup([
+
+            [
+                InlineKeyboardButton(
+                    "✅ Ишни якунлаш",
+                    callback_data=f"ud_{oid}"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "📞 Мижоз билан боғланиш",
+                    callback_data=f"uc_{oid}"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "❌ Бекор қилиш",
+                    callback_data=f"ux_{oid}"
+                )
+            ]
+
+        ])
+
+
+    return None
+
+
+# =====================================================
+# CALLBACK
+# =====================================================
+
+async def callback_handler(update, context):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    data = query.data or ""
+
+    parts = data.split("_")
+
+    if len(parts) != 2:
+
+        return
+
+    action = parts[0]
+
+    try:
+
+        oid = int(parts[1])
+
+    except:
+
+        return
+
+
+    if oid not in orders:
+
+        await query.answer(
+            "❌ Буюртма топилмади.",
+            show_alert=True
+        )
+
+        return
+
+
+    order = orders[oid]
+
+    uid = query.from_user.id
+
+
+    # =================================================
+    # DISPETCHER QABUL
+    # =================================================
+
+    if action == "da":
+
+        if uid != DISPATCHER_ID:
+
+            await query.answer(
+                "❌ Бу амал фақат диспетчер учун.",
+                show_alert=True
+            )
+
+            return
+
+
+        if order["status"] != "new":
+
+            await query.answer(
+                "⚠️ Буюртма аллақачон қабул қилинган.",
+                show_alert=True
+            )
+
+            return
+
+
+        order["status"] = "accepted"
+
+
+        await query.edit_message_text(
+
+            text=(
+                "🟡 БУЮРТМА ҚАБУЛ ҚИЛИНДИ\n\n"
+                f"{order_text(order)}"
+            ),
+
+            reply_markup=dispatcher_order_keyboard(oid)
+        )
+
+        return
+
+
+    # =================================================
+    # DISPETCHER RAD
+    # =================================================
+
+    if action == "dr":
+
+        if uid != DISPATCHER_ID:
+
+            await query.answer(
+                "❌ Бу амал фақат диспетчер учун.",
+                show_alert=True
+            )
+
+            return
+
+
+        order["status"] = "reject"
+
+
+        await query.edit_message_text(
+
+            text=(
+                "🚫 БУЮРТМА РАД ЭТИЛДИ\n\n"
+                f"{order_text(order)}"
+            )
+        )
+
+
+        await context.bot.send_message(
+
+            chat_id=order["customer_id"],
+
+            text=(
+                f"🚫 №{oid} буюртма рад этилди.\n\n"
+                "Илтимос, қайта буюртма беришингиз мумкин.\n\n"
+                "☎️ USTA 24\n"
+                "+998 77 069 00 03"
+            ),
+
+            reply_markup=client_menu()
+        )
+
+        return
+
+
+    # =================================================
+    # DISPETCHER MIJOZ BILAN BOG'LANISH
+    # =================================================
+
+    if action == "dc":
+
+        if uid != DISPATCHER_ID:
+
+            await query.answer(
+                "❌ Бу амал фақат диспетчер учун.",
+                show_alert=True
+            )
+
+            return
+
+
+        await query.answer(
+            f"📞 {order['phone']}",
+            show_alert=True
+        )
+
+        return
+
+
+    # =================================================
+    # DISPETCHER USTA TANLASH
+    # =================================================
+
+    if action == "dm":
+
+        if uid != DISPATCHER_ID:
+
+            await query.answer(
+                "❌ Бу амал фақат диспетчер учун.",
+                show_alert=True
+            )
+
+            return
+
+
+        if not masters:
+
+            await query.answer(
+                "❌ Ҳали уста қўшилмаган.",
+                show_alert=True
+            )
+
+            return
+
+
+        buttons = []
+
+
+        for mid, master in masters.items():
+
+            buttons.append([
+
+                InlineKeyboardButton(
+
+                    f"👨‍🔧 {master['name']}",
+
+                    callback_data=f"assign_{oid}_{mid}"
+                )
+
+            ])
+
+
+        await query.message.reply_text(
+
+            "👨‍🔧 УСТАНИ ТАНЛАНГ:",
+
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+        return
+
+
+    # =================================================
+    # USTA QABUL
+    # =================================================
+
+    if action == "ua":
+
+        user = query.from_user
+
+
+        if order["status"] not in [
+            "new",
+            "accepted"
+        ]:
+
+            await query.answer(
+                "⚠️ Бу буюртмани қабул қилиб бўлмайди.",
+                show_alert=True
+            )
+
+            return
+
+
+        if order.get("master_id"):
+
+            if order["master_id"] != user.id:
+
+                await query.answer(
+                    "❌ Бу буюртма бошқа устага берилган.",
+                    show_alert=True
+                )
+
+                return
+
+
+        master_name = (
+
+            f"@{user.username}"
+
+            if user.username
+
+            else user.first_name
+        )
+
+
+        order["status"] = "accepted"
+
+        order["master"] = master_name
+
+        order["master_id"] = user.id
+
+
+        await query.edit_message_text(
+
+            text=(
+                "🟡 БУЮРТМА ҚАБУЛ ҚИЛИНДИ\n\n"
+                f"{order_text(order)}"
+            ),
+
+            reply_markup=master_order_keyboard(
+                oid,
+                "accepted"
+            )
+        )
+
+
+        await context.bot.send_message(
+
+            chat_id=order["customer_id"],
+
+            text=(
+                f"🟡 Буюртмангиз №{oid} қабул қилинди.\n\n"
+                f"👨‍🔧 Уста: {master_name}\n\n"
+                "Тез орада уста ишни бошлайди.\n\n"
+                "☎️ USTA 24\n"
+                "+998 77 069 00 03"
+            )
+        )
+
+        return
+
+
+    # =================================================
+    # USTA RAD
+    # =================================================
+
+    if action == "ur":
+
+        order["status"] = "reject"
+
+
+        await query.edit_message_text(
+
+            text=(
+                "🚫 БУЮРТМА РАД ЭТИЛДИ\n\n"
+                f"{order_text(order)}"
+            )
+        )
+
+
+        await context.bot.send_message(
+
+            chat_id=order["customer_id"],
+
+            text=(
+                f"🚫 №{oid} буюртма рад этилди.\n\n"
+                "Бошқа уста бириктирилади."
+            )
+        )
+
+        return
+
+
+    # =================================================
+    # USTA ISHNI BOSHLASH
+    # =================================================
+
+    if action == "us":
+
+        if order.get("master_id") != uid:
+
+            await query.answer(
+                "❌ Бу буюртма сизга бириктирилмаган.",
+                show_alert=True
+            )
+
+            return
+
+
+        order["status"] = "process"
+
+
+        await query.edit_message_text(
+
+            text=(
+                "🔵 ИШ ЖАРАЁНИДА\n\n"
+                f"{order_text(order)}"
+            ),
+
+            reply_markup=master_order_keyboard(
+                oid,
+                "process"
+            )
+        )
+
+
+        await context.bot.send_message(
+
+            chat_id=order["customer_id"],
+
+            text=(
+                f"🔵 №{oid} буюртма бўйича иш бошланди.\n\n"
+                f"👨‍🔧 Уста: {order['master']}\n\n"
+                "☎️ USTA 24\n"
+                "+998 77 069 00 03"
+            )
+        )
+
+        return
+
+
+    # =================================================
+    # USTA MIJOZ BILAN BOG'LANISH
+    # =================================================
+
+    if action == "uc":
+
+        if order.get("master_id") != uid:
+
+            await query.answer(
+                "❌ Бу буюртма сизга бириктирилмаган.",
+                show_alert=True
+            )
+
+            return
+
+
+        await query.answer(
+            f"📞 {order['phone']}",
+            show_alert=True
+        )
+
+        return
+
+
+    # =================================================
+    # USTA BOSHQA USTAGA BERISH
+    # =================================================
+
+    if action == "ub":
+
+        if order.get("master_id") != uid:
+
+            await query.answer(
+                "❌ Бу буюртма сизга бириктирилмаган.",
+                show_alert=True
+            )
+
+            return
+
+
+        old_master = order.get("master")
+
+
+        order["status"] = "new"
+
+        order["master"] = None
+
+        order["master_id"] = None
+
+
+        keyboard = master_order_keyboard(
+            oid,
+            "new"
+        )
+
+
+        await query.edit_message_text(
+
+            text=(
+                "🔄 БОШҚА УСТАГА БЕРИЛДИ\n\n"
+                f"{order_text(order)}"
+            ),
+
+            reply_markup=keyboard
+        )
+
+
+        await context.bot.send_message(
+
+            chat_id=MASTERS_GROUP_ID,
+
+            text=(
+                "🔄 БОШҚА УСТАГА БЕРИЛГАН БУЮРТМА\n\n"
+                f"{order_text(order)}"
+            ),
+
+            reply_markup=keyboard
+        )
+
+        return
+
+
+    # =================================================
+    # USTA YAKUNLASH
+    # =================================================
+
+    if action == "ud":
+
+        if order.get("master_id") != uid:
+
+            await query.answer(
+                "❌ Бу буюртма сизга бириктирилмаган.",
+                show_alert=True
+            )
+
+            return
+
+
+        order["status"] = "done"
+
+
+        await query.edit_message_text(
+
+            text=(
+                "✅ БУЮРТМА ЯКУНЛАНДИ\n\n"
+                f"{order_text(order)}"
+            )
+        )
+
+
+        keyboard = InlineKeyboardMarkup([
+
+            [
+                InlineKeyboardButton(
+                    "⭐ Баҳо бериш",
+                    callback_data=f"rate_{oid}"
+                )
+            ]
+
+        ])
+
+
+        await context.bot.send_message(
+
+            chat_id=order["customer_id"],
+
+            text=(
+                f"✅ №{oid} буюртмангиз якунланди.\n\n"
+                f"👨‍🔧 Уста: {order['master']}\n\n"
+                "Хизматимизга баҳо беринг:"
+            ),
+
+            reply_markup=keyboard
+        )
+
+        return
+
+
+    # =================================================
+    # USTA BEKOR QILISH
+    # =================================================
+
+    if action == "ux":
+
+        if order.get("master_id") != uid:
+
+            await query.answer(
+                "❌ Бу буюртма сизга бириктирилмаган.",
+                show_alert=True
+            )
+
+            return
+
+
+        order["status"] = "cancel"
+
+
+        await query.edit_message_text(
+
+            text=(
+                "❌ БУЮРТМА БЕКОР ҚИЛИНДИ\n\n"
+                f"{order_text(order)}"
+            )
+        )
+
+
+        await context.bot.send_message(
+
+            chat_id=order["customer_id"],
+
+            text=(
+                f"❌ №{oid} буюртма бекор қилинди.\n\n"
+                "☎️ USTA 24\n"
+                "+998 77 069 00 03"
+            ),
+
+            reply_markup=client_menu()
+        )
+
+        return
+
+
+    # =================================================
+    # RATING
+    # =================================================
+
+    if action == "rate":
+
+        if order["status"] != "done":
+
+            await query.answer(
+                "⚠️ Буюртма ҳали якунланмаган.",
+                show_alert=True
+            )
+
+            return
+
+
+        keyboard = InlineKeyboardMarkup([
+
+            [
+                InlineKeyboardButton(
+                    "⭐",
+                    callback_data=f"rating_1_{oid}"
+                ),
+
+                InlineKeyboardButton(
+                    "⭐⭐",
+                    callback_data=f"rating_2_{oid}"
+                ),
+
+                InlineKeyboardButton(
+                    "⭐⭐⭐",
+                    callback_data=f"rating_3_{oid}"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "⭐⭐⭐⭐",
+                    callback_data=f"rating_4_{oid}"
+                ),
+
+                InlineKeyboardButton(
+                    "⭐⭐⭐⭐⭐",
+                    callback_data=f"rating_5_{oid}"
+                )
+            ]
+
+        ])
+
+
+        await query.message.reply_text(
+
+            "⭐ Устага баҳо беринг:",
+
+            reply_markup=keyboard
+        )
+
+        return
+
+
+    # =================================================
+    # RATING QABUL
+    # =================================================
+
+    if action == "rating":
+
+        if len(parts) != 3:
+
+            return
+
+
+        rating = int(parts[1])
+
+        rating_oid = int(parts[2])
+
+
+        if rating_oid not in orders:
+
+            return
+
+
+        rating_order = orders[rating_oid]
+
+
+        reviews[rating_oid] = {
+
+            "customer_id":
+                rating_order["customer_id"],
+
+            "master_id":
+                rating_order.get("master_id"),
+
+            "rating":
+                rating,
+
+            "created":
+                datetime.now(),
+
+        }
+
+
+        await query.edit_message_text(
+
+            f"⭐ Раҳмат!\n\n"
+            f"Сизнинг баҳонгиз: {rating}/5\n\n"
+            "USTA 24 хизматидан фойдаланганингиз учун раҳмат."
+        )
+
+        return
+
+
+# =====================================================
+# ADMIN START
+# =====================================================
+
+async def admin_start(update, context):
+
+    if update.effective_user.id != ADMIN_ID:
+
+        await update.message.reply_text(
+            "❌ Сиз админ эмассиз."
+        )
+
+        return
+
+
+    await update.message.reply_text(
+
+        "👑 USTA 24 АДМИН\n\n"
+        "Бўлимни танланг:",
+
+        reply_markup=admin_menu()
+    )
+
+
+# =====================================================
+# DISPETCHER START
+# =====================================================
+
+async def dispatcher_start(update, context):
+
+    if update.effective_user.id != DISPATCHER_ID:
+
+        await update.message.reply_text(
+            "❌ Сиз диспетчер эмассиз."
+        )
+
+        return
+
+
+    await update.message.reply_text(
+
+        "👨‍💼 USTA 24 ДИСПЕТЧЕР\n\n"
+        "Буюртмаларни бошқариш панели:",
+
+        reply_markup=dispatcher_menu()
+    )
+
+
+# =====================================================
+# MIJOZ BAZASI
+# =====================================================
+
+async def customer_base(update, context):
+
+    if update.effective_user.id != ADMIN_ID:
+
+        return
+
+
+    if not orders:
+
+        await update.message.reply_text(
+            "👤 Мижозлар базаси ҳозирча бўш."
+        )
+
+        return
+
+
+    text = "👤 МИЖОЗЛАР БАЗАСИ\n\n"
+
+
+    seen = set()
+
+
+    for order in orders.values():
+
+        cid = order["customer_id"]
+
+        if cid in seen:
+            continue
+
+        seen.add(cid)
+
+
+        text += (
+
+            f"👤 {order['name']}\n"
+            f"📞 {order['phone']}\n"
+            f"📍 {order['address']}\n"
+            "────────────\n"
+        )
+
+
+    await update.message.reply_text(text)
+
+
+# =====================================================
+# USTALAR
+# =====================================================
+
+async def masters_list(update, context):
+
+    if update.effective_user.id not in [
+        ADMIN_ID,
+        DISPATCHER_ID
+    ]:
+
+        return
+
+
+    if not masters:
+
+        await update.message.reply_text(
+            "👨‍🔧 Ҳали усталар қўшилмаган."
+        )
+
+        return
+
+
+    text = "👨‍🔧 УСТАЛАР\n\n"
+
+
+    for mid, master in masters.items():
+
+        text += (
+
+            f"🆔 {mid}\n"
+            f"👨‍🔧 {master['name']}\n"
+            f"📞 {master['phone']}\n"
+            f"📊 Буюртмалар: "
+            f"{master.get('orders', 0)}\n"
+            "────────────\n"
+        )
+
+
+    await update.message.reply_text(text)
+
+
+# =====================================================
+# STATISTIKA
+# =====================================================
+
+async def statistics(update, context):
+
+    if update.effective_user.id not in [
+        ADMIN_ID,
+        DISPATCHER_ID
+    ]:
+
+        return
+
+
+    total = len(orders)
+
+    new = 0
+    accepted = 0
+    process = 0
+    done = 0
+    cancel = 0
+    reject = 0
+
+
+    for order in orders.values():
+
+        status = order["status"]
+
+
+        if status == "new":
+            new += 1
+
+        elif status == "accepted":
+            accepted += 1
+
+        elif status == "process":
+            process += 1
+
+        elif status == "done":
+            done += 1
+
+        elif status == "cancel":
+            cancel += 1
+
+        elif status == "reject":
+            reject += 1
+
+
+    await update.message.reply_text(
+
+        "📊 USTA 24 СТАТИСТИКА\n\n"
+
+        f"📋 Жами: {total}\n"
+        f"🆕 Янги: {new}\n"
+        f"🟡 Қабул қилинган: {accepted}\n"
+        f"🔵 Иш жараёнида: {process}\n"
+        f"✅ Якунланган: {done}\n"
+        f"❌ Бекор қилинган: {cancel}\n"
+        f"🚫 Рад этилган: {reject}"
+    )
+
+
+# =====================================================
+# ADMIN BUTTON
+# =====================================================
+
+async def admin_button(update, context):
+
+    if not update.message:
+        return
+
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+
+    text = update.message.text or ""
+
+
+    if text == "👤 Мижоз базаси":
+
+        await customer_base(
+            update,
+            context
+        )
+
+        return
+
+
+    if text == "👨‍🔧 Усталар":
+
+        await masters_list(
+            update,
+            context
+        )
+
+        return
+
+
+    if text == "📊 Тўлиқ статистика":
+
+        await statistics(
+            update,
+            context
+        )
+
+        return
+
+
+    if text == "📢 Хабар тарқатиш":
+
+        await update.message.reply_text(
+
+            "📢 Хабар тарқатиш учун:\n\n"
+            "/send Хабар матни"
+        )
+
+        return
+
+
+    if text == "📈 Ҳисобот":
+
+        await statistics(
+            update,
+            context
+        )
+
+        return
+
+
+# =====================================================
+# DISPETCHER BUTTON
+# =====================================================
+
+async def dispatcher_button(update, context):
+
+    if not update.message:
+        return
+
+
+    if update.effective_user.id != DISPATCHER_ID:
+        return
+
+
+    text = update.message.text or ""
+
+
+    if text == "👨‍🔧 Усталар":
+
+        await masters_list(
+            update,
+            context
+        )
+
+        return
+
+
+    if text == "📊 Статистика":
+
+        await statistics(
+            update,
+            context
+        )
+
+        return
+
+
+    if text == "📋 Барча буюртмалар":
+
+        if not orders:
+
+            await update.message.reply_text(
+                "📋 Буюртмалар ҳозирча йўқ."
+            )
+
+            return
+
+
+        text_out = "📋 БАРЧА БУЮРТМАЛАР\n\n"
+
+
+        for order in orders.values():
+
+            text_out += (
+
+                f"🔢 №{order['id']}\n"
+                f"👤 {order['name']}\n"
+                f"🛠 {order['service']}\n"
+                f"📌 {STATUS.get(order['status'])}\n"
+                "────────────\n"
+            )
+
+
+        await update.message.reply_text(
+            text_out
+        )
+
+        return
+
+
+# =====================================================
+# SEND
+# =====================================================
+
+async def send_command(update, context):
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+
+    message = " ".join(context.args)
+
+
+    if not message:
+
+        await update.message.reply_text(
+
+            "❌ Хабар матни йўқ.\n\n"
+            "Формат:\n"
+            "/send Хабар матни"
+        )
+
+        return
+
+
+    customer_ids = set(
+
+        order["customer_id"]
+
+        for order in orders.values()
+    )
+
+
+    count = 0
+
+
+    for customer_id in customer_ids:
+
+        try:
+
+            await context.bot.send_message(
+
+                chat_id=customer_id,
+
+                text=message
+            )
+
+            count += 1
+
+        except Exception as e:
+
+            logger.warning(
+                f"Хабар юборилмади: {e}"
+            )
+
+
+    await update.message.reply_text(
+
+        "📢 ХАБАР ТАРҚАТИЛДИ\n\n"
+        f"👥 Юборилди: {count} та мижоз"
+    )
+
+
+# =====================================================
+# MASTER ASSIGN
+# =====================================================
+
+async def assign_master_callback(update, context):
+
+    query = update.callback_query
+
+    await query.answer()
+
+
+    parts = query.data.split("_")
+
+
+    if len(parts) != 3:
+
+        return
+
+
+    oid = int(parts[1])
+
+    mid = int(parts[2])
+
+
+    if query.from_user.id != DISPATCHER_ID:
+
+        await query.answer(
+            "❌ Фақат диспетчер.",
+            show_alert=True
+        )
+
+        return
+
+
+    if oid not in orders or mid not in masters:
+
+        return
+
+
+    order = orders[oid]
+
+    master = masters[mid]
+
+
+    order["status"] = "assigned"
+
+    order["master_id"] = mid
+
+    order["master"] = master["name"]
+
+
+    master["orders"] = master.get(
+        "orders",
+        0
+    ) + 1
+
+
+    await query.message.reply_text(
+
+        "👨‍🔧 УСТА БИРИКТИРИЛДИ\n\n"
+
+        f"{order_text(order)}"
+    )
+
+
+    await context.bot.send_message(
+
+        chat_id=MASTERS_GROUP_ID,
+
+        text=(
+            "🆕 СИЗГА ЯНГИ БУЮРТМА БЕРИЛДИ\n\n"
+            f"{order_text(order)}"
+        ),
+
+        reply_markup=master_order_keyboard(
+            oid,
+            "new"
+        )
+    )
+
+
+    await context.bot.send_message(
+
+        chat_id=order["customer_id"],
+
+        text=(
+            f"👨‍🔧 №{oid} буюртмангизга уста бириктирилди.\n\n"
+            f"👨‍🔧 Уста: {master['name']}\n\n"
+            "Тез орада сиз билан боғланади.\n\n"
+            "☎️ USTA 24\n"
+            "+998 77 069 00 03"
+        )
+    )
+
+
+# =====================================================
+# GENERAL MESSAGE ROUTER
+# =====================================================
+
+async def message_router(update, context):
+
+    if not update.message:
+        return
+
+
+    uid = update.effective_user.id
+
+    text = update.message.text or ""
+
+
+    # ADMIN
+
+    if uid == ADMIN_ID:
+
+        await admin_button(
+            update,
+            context
+        )
+
+        return
+
+
+    # DISPETCHER
+
+    if uid == DISPATCHER_ID:
+
+        await dispatcher_button(
+            update,
+            context
+        )
+
+        return
+
+
+    # CLIENT
+
+    await client_handler(
+        update,
+        context
+    )
+
+
+# =====================================================
+# MAIN
+# =====================================================
+
+def main():
+
+    application = (
+        Application.builder()
+        .token(TOKEN)
+        .build()
+    )
+
+
+    # START
+
+    application.add_handler(
+
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+
+    # ADMIN
+
+    application.add_handler(
+
+        CommandHandler(
+            "admin",
+            admin_start
+        )
+    )
+
+
+    # DISPETCHER
+
+    application.add_handler(
+
+        CommandHandler(
+            "dispatcher",
+            dispatcher_start
+        )
+    )
+
+
+    # SEND
+
+    application.add_handler(
+
+        CommandHandler(
+            "send",
+            send_command
+        )
+    )
+
+
+    # MASTER ASSIGN
+
+    application.add_handler(
+
+        CallbackQueryHandler(
+            assign_master_callback,
+            pattern=r"^assign_\d+_\d+$"
+        )
+    )
+
+
+    # ALL OTHER CALLBACKS
+
+    application.add_handler(
+
+        CallbackQueryHandler(
+            callback_handler
+        )
+    )
+
+
+    # MESSAGES
+
+    application.add_handler(
+
+        MessageHandler(
+
+            filters.CONTACT |
+            filters.LOCATION |
+            filters.TEXT,
+
+            message_router
+        )
+    )
+
+
+    # FLASK
+
+    Thread(
+        target=run_flask,
+        daemon=True
+    ).start()
+
+
+    print(
+        "USTA 24 BOT ISHLADI"
+    )
+
+
+    application.run_polling()
+
+
+# =====================================================
+# START
+# =====================================================
+
+if __name__ == "__main__":
+
+    main()
