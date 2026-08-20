@@ -1399,150 +1399,175 @@ async def broadcast(update,context):
 # =====================================================
 
 
+# =====================================================
+# SEND COMMAND
+# =====================================================
 
-async def button_handler(update,context):
+async def send_command(update, context):
 
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text(
+            "❌ Сиз админ эмассиз."
+        )
+        return
 
-    text = update.message.text
-
-
-    if text == "👤 Мижоз базаси":
-
-        await customer_base(update,context)
-
-
-    elif text == "👨‍🔧 Усталар":
-
-        await masters_list(update,context)
-
-
-    elif text == "📊 Статистика":
-
-        await statistics(update,context)
-
-
-    elif text == "📢 Хабар тарқатиш":
+    if not context.args:
 
         await update.message.reply_text(
-
-            "Хабар юбориш:\n"
-            "/send матн"
-
+            "📢 Хабар тарқатиш\n\n"
+            "Формат:\n"
+            "/send Хабар матни"
         )
 
+        return
+
+    message = " ".join(context.args)
+
+    count = 0
+
+    users_sent = set()
+
+    for order in orders.values():
+
+        customer_id = order.get("customer_id")
+
+        if not customer_id:
+            continue
+
+        if customer_id in users_sent:
+            continue
+
+        users_sent.add(customer_id)
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=customer_id,
+                text=message
+            )
+
+            count += 1
+
+        except Exception as e:
+
+            logger.warning(
+                f"Хабар юборилмади {customer_id}: {e}"
+            )
+
+    await update.message.reply_text(
+
+        "📢 Хабар тарқатиш якунланди.\n\n"
+
+        f"👥 Юборилди: {count} та мижоз"
+    )
 
 
-    else:
+# =====================================================
+# BUTTON HANDLER
+# =====================================================
 
-        await client_handler(update,context)
-
-
-
-
-
-
-
-async def button_handler(update,context):
+async def button_handler(update, context):
 
     if not update.message:
         return
 
-
     text = update.message.text or ""
 
+    user_id = update.effective_user.id
 
-    # АДМИН БЎЛИМЛАРИ
 
-    if update.effective_user.id == ADMIN_ID:
+    # =================================================
+    # ADMIN
+    # =================================================
 
+    if user_id == ADMIN_ID:
 
         if text == "👤 Мижоз базаси":
-            await customer_base(update,context)
+
+            await customer_base(
+                update,
+                context
+            )
+
             return
 
 
         if text == "👨‍🔧 Усталар":
-            await masters_list(update,context)
+
+            await masters_list(
+                update,
+                context
+            )
+
             return
 
 
         if text == "📊 Статистика":
-            await statistics(update,context)
+
+            await statistics(
+                update,
+                context
+            )
+
             return
 
 
         if text == "📢 Хабар тарқатиш":
+
             await update.message.reply_text(
-                "Формат:\n/send матн"
+
+                "📢 Хабар тарқатиш\n\n"
+
+                "Хабар матнини қуйидагича юборинг:\n\n"
+
+                "/send Бугун соат 18:00 гача буюртмалар қабул қилинади."
             )
+
             return
 
 
+    # =================================================
+    # MIJOZ
+    # =================================================
 
-    # МИЖОЗ БУЮРТМАСИ
-
-    await client_handler(update,context)
-
-
-    await broadcast(update,context)
-
-
-
-
-
+    await client_handler(
+        update,
+        context
+    )
 
 
 # =====================================================
-# BOT ISHGA TUSHISH
+# MAIN
 # =====================================================
-
-
 
 def main():
 
-
-    application = Application.builder()\
-        .token(TOKEN)\
+    application = (
+        Application.builder()
+        .token(TOKEN)
         .build()
+    )
 
 
-
-
-
+    # =================================================
     # START
+    # =================================================
 
     application.add_handler(
 
         CommandHandler(
-
             "start",
-
             start
-
         )
-
     )
 
 
-
+    # =================================================
     # ADMIN
-
-    def main():
-
-       application = Application.builder()\
-         .token(TOKEN)\
-         .build()
-
+    # =================================================
 
     application.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
-    )
 
-
-    application.add_handler(
         CommandHandler(
             "admin",
             admin_start
@@ -1550,7 +1575,12 @@ def main():
     )
 
 
+    # =================================================
+    # SEND
+    # =================================================
+
     application.add_handler(
+
         CommandHandler(
             "send",
             send_command
@@ -1558,72 +1588,38 @@ def main():
     )
 
 
+    # =================================================
+    # INLINE BUTTONS
+    # =================================================
+
     application.add_handler(
+
         CallbackQueryHandler(
             order_callback
         )
     )
 
 
-    application.add_handler(
-        MessageHandler(
-            filters.CONTACT |
-            filters.LOCATION |
-            filters.TEXT,
-            button_handler
-        )
-    )
-
-
-    Thread(
-        target=run_flask,
-        daemon=True
-    ).start()
-
-
-    print("USTA 24 BOT ISHLADI")
-
-
-    application.run_polling()
-
-
-
-if __name__ == "__main__":
-    main()
-
-
-
-    application.add_handler(
-
-        CallbackQueryHandler(
-
-            order_callback
-
-        )
-
-    )
-
-
-
-    # TEXT
+    # =================================================
+    # TEXT / CONTACT / LOCATION
+    # =================================================
 
     application.add_handler(
 
         MessageHandler(
 
-            filters.CONTACT |
-            filters.LOCATION |
-            filters.TEXT,
+            filters.CONTACT
+            | filters.LOCATION
+            | filters.TEXT,
 
             button_handler
-
         )
-
     )
 
 
-
-
+    # =================================================
+    # FLASK
+    # =================================================
 
     Thread(
 
@@ -1632,8 +1628,6 @@ if __name__ == "__main__":
         daemon=True
 
     ).start()
-
-
 
 
     print(
@@ -1641,14 +1635,16 @@ if __name__ == "__main__":
     )
 
 
+    # =================================================
+    # POLLING
+    # =================================================
 
     application.run_polling()
 
 
-
-
-
-
+# =====================================================
+# START BOT
+# =====================================================
 
 if __name__ == "__main__":
 
