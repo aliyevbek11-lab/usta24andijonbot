@@ -1,13 +1,14 @@
-    # =====================================================
-# USTA 24 BOT
-# MAIN.PY 1/2
-# Мижоз + Буюртма тизими
+# =====================================================
+# USTA 24 PRO BOT
+# MAIN.PY 1/4
+# Мижоз + Буюртма ядроси
 # =====================================================
 
 import os
 import logging
 from datetime import datetime
 from threading import Thread
+
 from flask import Flask
 
 from telegram import (
@@ -28,9 +29,9 @@ from telegram.ext import (
 )
 
 
-# ==========================
+# =====================================================
 # СОЗЛАНМАЛАР
-# ==========================
+# =====================================================
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
@@ -56,17 +57,20 @@ logging.basicConfig(
 )
 
 
+logger = logging.getLogger("USTA24")
 
-# ==========================
-# RENDER
-# ==========================
+
+
+# =====================================================
+# RENDER FLASK
+# =====================================================
 
 app = Flask(__name__)
 
 
 @app.route("/")
 def home():
-    return "USTA 24 ишлаяпти"
+    return "USTA 24 PRO ишлаяпти"
 
 
 @app.route("/health")
@@ -84,63 +88,98 @@ def run_flask():
 
 
 
-# ==========================
-# БАЗА
-# ==========================
+
+
+# =====================================================
+# ВАҚТИНЧА БАЗА
+# =====================================================
 
 users = {}
+
 orders = {}
+
 masters = {}
+
 reviews = {}
+
+prices = {}
+
 
 order_id = 0
 
 
 
-# ==========================
+
+
+# =====================================================
 # ХИЗМАТЛАР
-# ==========================
+# =====================================================
 
 SERVICES = [
 
-"🪑 Мебель йиғиш",
-"🛠 Мебель таъмирлаш",
-"🍽 Ошхона мебели",
-"🚪 Шкаф купе",
-"🛏 Каравот йиғиш",
-"🪑 Стол ва стул",
-"📦 Мебель кўчириш",
-"🚚 Уй кўчириш",
-"🚛 Юк ташиш",
-"🔩 Сантехника",
-"⚡ Электр ишлари",
-"🔥 Иситиш тизими",
-"🎨 Бўяш ишлари",
-"🪟 Эшик ва дераза",
-"❄ Кондиционер",
-"📡 Интернет ўрнатиш",
-"🧹 Тозалаш",
-"🔨 Пайвандлаш",
-"🏠 Уста чақириш",
-"🔧 Бошқа хизмат"
+    "🪑 Мебель йиғиш",
+
+    "🛠 Мебель таъмирлаш",
+
+    "🍽 Ошхона мебели",
+
+    "🚪 Шкаф купе",
+
+    "🛏 Каравот йиғиш",
+
+    "🪑 Стол ва стул",
+
+    "📦 Мебель кўчириш",
+
+    "🚚 Уй кўчириш",
+
+    "🚛 Юк ташиш",
+
+    "🔩 Сантехника",
+
+    "⚡ Электр ишлари",
+
+    "🔥 Иситиш тизими",
+
+    "🎨 Бўяш ишлари",
+
+    "🪟 Эшик ва дераза",
+
+    "❄ Кондиционер",
+
+    "📡 Интернет ўрнатиш",
+
+    "🧹 Тозалаш",
+
+    "🔨 Пайвандлаш",
+
+    "🏠 Уста чақириш",
+
+    "🔧 Бошқа хизмат"
 
 ]
 
 
 
-# ==========================
+
+
+# =====================================================
 # МЕНЮЛАР
-# ==========================
+# =====================================================
 
 
-def мижоз_меню():
+def client_menu():
 
     return ReplyKeyboardMarkup(
 
         [
+
             ["📝 Буюртма бериш"],
+
             ["📋 Хизматлар"],
+
             ["🔁 Қайта буюртма"]
+
         ],
 
         resize_keyboard=True
@@ -149,7 +188,8 @@ def мижоз_меню():
 
 
 
-def хизмат_меню():
+
+def service_menu():
 
     return ReplyKeyboardMarkup(
 
@@ -161,31 +201,43 @@ def хизмат_меню():
 
 
 
-# ==========================
+
+
+# =====================================================
 # START
-# ==========================
+# =====================================================
 
 
-async def start(update,context):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+
+    user = update.effective_user
+
 
     await update.message.reply_text(
 
-        "👋 Ассалому алайкум\n\n"
+        f"👋 Ассалому алайкум {user.first_name}\n\n"
+
         "🏠 USTA 24 хизматлари\n\n"
+
         "Керакли бўлимни танланг:",
 
-        reply_markup=мижоз_меню()
+        reply_markup=client_menu()
 
     )
 
 
 
-# ==========================
+
+
+
+# =====================================================
 # БУЮРТМА БОШЛАШ
-# ==========================
+# =====================================================
 
 
-async def янги_буюртма(update,context):
+async def new_order(update, context):
+
 
     uid = update.effective_user.id
 
@@ -193,31 +245,36 @@ async def янги_буюртма(update,context):
     users[uid] = {
 
         "қадам":"исм",
+
         "исм":"",
+
         "телефон":"",
+
         "хизмат":"",
+
         "манзил":"",
+
         "изоҳ":""
 
     }
 
 
+
     await update.message.reply_text(
 
         "📝 Буюртма бериш\n\n"
+
         "👤 Исмингизни ёзинг:"
 
-    )
+
+        # =====================================================
+# MIJOZ BUYURTMA DAVOMI
+# MAIN.PY 2/4
+# =====================================================
 
 
 
-
-# ==========================
-# МИЖОЗ ХАБАРЛАРИ
-# ==========================
-
-
-async def message_handler(update,context):
+async def client_message(update, context):
 
     if not update.message:
         return
@@ -228,10 +285,11 @@ async def message_handler(update,context):
     text = update.message.text or ""
 
 
+    # Буюртма бошлаш
 
     if text == "📝 Буюртма бериш":
 
-        await янги_буюртма(update,context)
+        await new_order(update, context)
 
         return
 
@@ -247,14 +305,20 @@ async def message_handler(update,context):
 
 
 
-    if data["қадам"]=="исм":
+    # ==========================
+    # ИСМ
+    # ==========================
 
-        data["исм"]=text
-
-        data["қадам"]="телефон"
+    if data["қадам"] == "исм":
 
 
-        тугма = KeyboardButton(
+        data["исм"] = text
+
+        data["қадам"] = "телефон"
+
+
+
+        button = KeyboardButton(
 
             "📞 Телефон рақамимни юбориш",
 
@@ -269,7 +333,7 @@ async def message_handler(update,context):
 
             reply_markup=ReplyKeyboardMarkup(
 
-                [[тугма]],
+                [[button]],
 
                 resize_keyboard=True
 
@@ -277,11 +341,19 @@ async def message_handler(update,context):
 
         )
 
+
         return
 
 
 
-    if data["қадам"]=="телефон":
+
+
+    # ==========================
+    # ТЕЛЕФОН
+    # ==========================
+
+    if data["қадам"] == "телефон":
+
 
         if update.message.contact:
 
@@ -292,35 +364,47 @@ async def message_handler(update,context):
             data["телефон"] = text
 
 
-        data["қадам"]="хизмат"
+
+        data["қадам"] = "хизмат"
+
 
 
         await update.message.reply_text(
 
             "🛠 Хизматни танланг:",
 
-            reply_markup=хизмат_меню()
+            reply_markup=service_menu()
 
         )
+
 
         return
 
 
 
-    if data["қадам"]=="хизмат":
-
-        data["хизмат"]=text
-
-        data["қадам"]="манзил"
 
 
-        тугма = KeyboardButton(
+    # ==========================
+    # ХИЗМАТ
+    # ==========================
+
+    if data["қадам"] == "хизмат":
+
+
+        data["хизмат"] = text
+
+        data["қадам"] = "манзил"
+
+
+
+        location_button = KeyboardButton(
 
             "📍 Геолокация юбориш",
 
             request_location=True
 
         )
+
 
 
         await update.message.reply_text(
@@ -330,8 +414,11 @@ async def message_handler(update,context):
             reply_markup=ReplyKeyboardMarkup(
 
                 [
-                    [тугма],
-                    ["Манзилни ёзиш"]
+
+                    [location_button],
+
+                    ["✍️ Манзилни ёзиш"]
+
                 ],
 
                 resize_keyboard=True
@@ -340,31 +427,100 @@ async def message_handler(update,context):
 
         )
 
+
         return
 
-# =====================================================
-# USTA 24 BOT
-# MAIN.PY 2/2
-# Уста + Админ + Ишга тушириш
-# =====================================================
 
 
-# ==========================
+
+
+
+    # ==========================
+    # МАНЗИЛ
+    # ==========================
+
+    if data["қадам"] == "манзил":
+
+
+        if update.message.location:
+
+
+            data["манзил"] = (
+
+                f"{update.message.location.latitude},"
+
+                f"{update.message.location.longitude}"
+
+            )
+
+        else:
+
+            data["манзил"] = text
+
+
+
+        data["қадам"] = "изоҳ"
+
+
+
+        await update.message.reply_text(
+
+            "📝 Буюртма ҳақида ёзинг:"
+
+        )
+
+
+        return
+
+
+
+
+
+
+    # ==========================
+    # ИЗОҲ
+    # ==========================
+
+    if data["қадам"] == "изоҳ":
+
+
+        data["изоҳ"] = text
+
+
+
+        await create_order(
+
+            update,
+
+            context,
+
+            data
+
+        )
+
+
+        users.pop(uid, None)
+
+
+        return
+
+
+
+
+
+
+# =====================================================
 # БУЮРТМА ЯРАТИШ
-# ==========================
+# =====================================================
 
 
-async def create_order(update, context):
+async def create_order(update, context, data):
 
     global order_id
 
 
-    uid = update.effective_user.id
-
-    data = users[uid]
-
-
     order_id += 1
+
 
     oid = order_id
 
@@ -372,23 +528,33 @@ async def create_order(update, context):
 
     orders[oid] = {
 
+
         "id": oid,
 
-        "мижоз": uid,
+
+        "мижоз": update.effective_user.id,
+
 
         "исм": data["исм"],
 
+
         "телефон": data["телефон"],
+
 
         "хизмат": data["хизмат"],
 
+
         "манзил": data["манзил"],
+
 
         "изоҳ": data["изоҳ"],
 
+
         "ҳолат": "янги",
 
+
         "уста": None,
+
 
         "вақт": datetime.now()
 
@@ -396,7 +562,10 @@ async def create_order(update, context):
 
 
 
-    тугма = InlineKeyboardMarkup(
+
+
+
+    keyboard = InlineKeyboardMarkup(
 
         [
 
@@ -430,11 +599,13 @@ async def create_order(update, context):
 
 
 
-    хабар=(
 
-        "🆕 Янги буюртма\n\n"
 
-        f"🔢 №{oid}\n"
+    message = (
+
+        "🆕 ЯНГИ БУЮРТМА\n\n"
+
+        f"🔢 Буюртма №{oid}\n\n"
 
         f"👤 Мижоз: {data['исм']}\n"
 
@@ -444,9 +615,13 @@ async def create_order(update, context):
 
         f"📍 Манзил: {data['манзил']}\n"
 
-        f"📝 Изоҳ: {data['изоҳ']}"
+        f"📝 Изоҳ: {data['изоҳ']}\n\n"
+
+        "👨‍🔧 Уста қабул қилиши мумкин"
 
     )
+
+
 
 
 
@@ -454,139 +629,89 @@ async def create_order(update, context):
 
         chat_id=MASTERS_GROUP_ID,
 
-        text=хабар,
+        text=message,
 
-        reply_markup=тугма
+        reply_markup=keyboard
 
     )
+
+
 
 
 
     await update.message.reply_text(
 
-        f"✅ Буюртма қабул қилинди\n\n"
-        f"🔢 №{oid}\n"
-        "👨‍🔧 Усталарга юборилди",
+        "✅ Буюртмангиз қабул қилинди\n\n"
 
-        reply_markup=мижоз_меню()
+        f"🔢 Буюртма №{oid}\n\n"
 
-    )
+        "👨‍🔧 Уста тез орада боғланади.\n\n"
 
+        "☎️ USTA 24\n"
 
+        "+998 77 069 00 03",
 
-    users.pop(uid)
-
-
-
-# ==========================
-# МАНЗИЛ ВА ИЗОҲ
-# ==========================
-
-
-async def extra_handler(update,context):
-
-
-    uid = update.effective_user.id
-
-
-    if uid not in users:
-        return
-
-
-
-    data = users[uid]
-
-    text = update.message.text or ""
-
-
-
-    if data["қадам"]=="манзил":
-
-
-        if update.message.location:
-
-            data["манзил"] = (
-
-                f"{update.message.location.latitude},"
-                f"{update.message.location.longitude}"
-
-            )
-
-        else:
-
-            data["манзил"] = text
-
-
-
-        data["қадам"]="изоҳ"
-
-
-        await update.message.reply_text(
-
-            "📝 Буюртма ҳақида ёзинг:"
+        reply_markup=client_menu()
 
         )
 
-        return
+      # =====================================================
+# USTA TIZIMI
+# MAIN.PY 3/4
+# =====================================================
 
 
 
-
-    if data["қадам"]=="изоҳ":
-
-
-        data["изоҳ"]=text
-
-
-        await create_order(
-
-            update,
-
-            context
-
-        )
-
-        return
-
-
-
-
-
-# ==========================
-# УСТА ТУГМАЛАРИ
-# ==========================
-
-
-async def order_button(update,context):
-
+async def order_callback(update, context):
 
     query = update.callback_query
 
     await query.answer()
 
 
-    data=query.data
+    data = query.data
 
 
 
-    oid=int(data.split("_")[1])
-
-
-    order=orders.get(oid)
-
-
-    if not order:
+    if "_" not in data:
         return
 
 
 
-    if data.startswith("accept_"):
+    action, oid = data.split("_")
 
 
-        user=query.from_user
+    oid = int(oid)
 
 
-        master=(
+
+    if oid not in orders:
+
+        await query.answer(
+            "Буюртма топилмади",
+            show_alert=True
+        )
+
+        return
+
+
+
+    order = orders[oid]
+
+
+
+    # ==========================
+    # ҚАБУЛ ҚИЛИШ
+    # ==========================
+
+
+    if action == "accept":
+
+
+        user = query.from_user
+
+
+        master = (
 
             f"@{user.username}"
 
@@ -598,38 +723,73 @@ async def order_button(update,context):
 
 
 
-        order["ҳолат"]="қабул қилинган"
+        order["ҳолат"] = "қабул қилинган"
 
-        order["уста"]=master
+        order["уста"] = master
+
+        order["уста_id"] = user.id
+
 
 
 
         await query.edit_message_text(
 
-            "🟡 Қабул қилинди\n\n"
+            "🟡 БУЮРТМА ҚАБУЛ ҚИЛИНДИ\n\n"
 
-            f"№{oid}\n"
+            f"🔢 №{oid}\n"
+
+            f"👤 Мижоз: {order['исм']}\n"
+
+            f"📞 Телефон: {order['телефон']}\n"
+
+            f"🛠 Хизмат: {order['хизмат']}\n"
+
+            f"📍 Манзил: {order['манзил']}\n\n"
+
             f"👨‍🔧 Уста: {master}"
 
         )
+
+
+
 
 
         await context.bot.send_message(
 
-            order["мижоз"],
+            chat_id=order["мижоз"],
 
-            f"🟡 №{oid} буюртмангиз қабул қилинди\n"
-            f"👨‍🔧 Уста: {master}"
+
+            text=(
+
+                f"🟡 Буюртмангиз №{oid} қабул қилинди.\n\n"
+
+                f"👨‍🔧 Уста: {master}\n\n"
+
+                "Тез орада уста ишни бошлайди.\n\n"
+
+                "☎️ USTA 24\n"
+
+                "+998 77 069 00 03"
+
+            )
 
         )
 
 
 
 
-    elif data.startswith("reject_"):
 
 
-        order["ҳолат"]="рад этилган"
+    # ==========================
+    # РАД ЭТИШ
+    # ==========================
+
+
+    elif action == "reject":
+
+
+        order["ҳолат"] = "рад этилган"
+
 
 
         await query.edit_message_text(
@@ -640,71 +800,288 @@ async def order_button(update,context):
 
 
 
+        await context.bot.send_message(
+
+            order["мижоз"],
 
 
-# ==========================
-# АДМИН
-# ==========================
+            f"🚫 №{oid} буюртма рад этилди.\n\n"
+
+            "☎️ USTA 24\n"
+
+            "+998 77 069 00 03"
+
+        )
 
 
-async def admin(update,context):
 
+
+
+
+
+
+    # ==========================
+    # ИШ БОШЛАШ
+    # ==========================
+
+
+    elif action == "start":
+
+
+        order["ҳолат"] = "иш жараёнида"
+
+
+
+        await query.edit_message_text(
+
+            f"🔵 №{oid} иш жараёнида"
+
+        )
+
+
+
+        await context.bot.send_message(
+
+            order["мижоз"],
+
+
+            f"🔵 №{oid} буюртма бўйича иш бошланди.\n\n"
+
+            "☎️ USTA 24\n"
+
+            "+998 77 069 00 03"
+
+        )
+
+
+
+
+
+
+
+    # ==========================
+    # ЯКУНЛАШ
+    # ==========================
+
+
+    elif action == "done":
+
+
+        order["ҳолат"] = "якунланган"
+
+
+
+        await query.edit_message_text(
+
+            f"✅ №{oid} буюртма якунланди"
+
+        )
+
+
+
+        await context.bot.send_message(
+
+            order["мижоз"],
+
+
+            f"✅ №{oid} буюртма якунланди.\n\n"
+
+            "⭐ Устага баҳо беринг.\n\n"
+
+            "☎️ USTA 24\n"
+
+            "+998 77 069 00 03"
+
+        )
+
+
+
+
+
+
+
+
+    # ==========================
+    # БЕКОР ҚИЛИШ
+    # ==========================
+
+
+    elif action == "cancel":
+
+
+        order["ҳолат"] = "бекор қилинган"
+
+
+
+        await query.edit_message_text(
+
+            f"❌ №{oid} бекор қилинди"
+
+        )
+
+
+
+        await context.bot.send_message(
+
+            order["мижоз"],
+
+
+            f"❌ №{oid} буюртма бекор қилинди.\n\n"
+
+            "☎️ USTA 24\n"
+
+            "+998 77 069 00 03"
+
+        )
+
+
+       # =====================================================
+# ADMIN TIZIMI
+# MAIN.PY 4/4
+# =====================================================
+
+
+async def admin_panel(update, context):
 
     if update.effective_user.id != ADMIN_ID:
         return
-
 
 
     await update.message.reply_text(
 
         "👑 USTA 24 АДМИН\n\n"
-        "/stat - статистика\n"
-        "/mijoz - мижозлар\n"
-        "/ustalar - усталар"
+
+        "/stat - 📊 Статистика\n"
+        "/mijoz - 👤 Мижозлар\n"
+        "/ustalar - 👨‍🔧 Усталар\n"
+        "/hisobot - 📈 Ҳисобот\n"
+        "/excel - 📥 Excel маълумот\n"
 
     )
 
 
 
 
-
-async def statistic(update,context):
-
-
-    if update.effective_user.id != ADMIN_ID:
-        return
+# ==========================
+# МИЖОЗ БАЗАСИ
+# ==========================
 
 
-
-    await update.message.reply_text(
-
-        "📊 ТЎЛИҚ СТАТИСТИКА\n\n"
-
-        f"📋 Жами буюртма: {len(orders)}"
-
-    )
-
-
-
-
-
-async def customers(update,context):
-
+async def mijozlar(update,context):
 
     if update.effective_user.id != ADMIN_ID:
         return
 
 
+    text = "👤 МИЖОЗЛАР БАЗАСИ\n\n"
 
-    text="👤 МИЖОЗЛАР\n\n"
+
+    seen=set()
 
 
-    for o in orders.values():
+    for order in orders.values():
+
+        uid=order["мижоз"]
+
+
+        if uid not in seen:
+
+            seen.add(uid)
+
+
+            text += (
+
+                f"👤 {order['исм']}\n"
+
+                f"📞 {order['телефон']}\n"
+
+                "──────────\n"
+
+            )
+
+
+    await update.message.reply_text(text)
+
+
+
+
+
+# ==========================
+# УСТАЛАР
+# ==========================
+
+
+async def add_master(update,context):
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+
+    try:
+
+        data=update.message.text.split("|")
+
+
+        mid=int(data[0])
+
+        name=data[1]
+
+        phone=data[2]
+
+
+        masters[mid]={
+
+            "исм":name,
+
+            "телефон":phone,
+
+            "буюртма":0
+
+        }
+
+
+
+        await update.message.reply_text(
+
+            "✅ Уста қўшилди\n\n"
+
+            f"👨‍🔧 {name}"
+
+        )
+
+
+    except:
+
+        await update.message.reply_text(
+
+            "Формат:\n"
+
+            "ID | Исм | Телефон"
+
+        )
+
+
+
+
+
+
+async def ustalar(update,context):
+
+
+    text="👨‍🔧 УСТАЛАР\n\n"
+
+
+
+    for mid,m in masters.items():
 
         text += (
 
-            f"👤 {o['исм']}\n"
-            f"📞 {o['телефон']}\n"
+            f"🆔 {mid}\n"
+
+            f"👨‍🔧 {m['исм']}\n"
+
+            f"📞 {m['телефон']}\n"
+
             "────────\n"
 
         )
@@ -716,8 +1093,205 @@ async def customers(update,context):
 
 
 
+
 # ==========================
-# ИШГА ТУШИРИШ
+# СТАТИСТИКА
+# ==========================
+
+
+async def statistics(update,context):
+
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+
+
+    yangi=0
+    qabul=0
+    ish=0
+    done=0
+
+
+
+    for o in orders.values():
+
+        if o["ҳолат"]=="янги":
+            yangi+=1
+
+        elif o["ҳолат"]=="қабул қилинган":
+            qabul+=1
+
+        elif o["ҳолат"]=="иш жараёнида":
+            ish+=1
+
+        elif o["ҳолат"]=="якунланган":
+            done+=1
+
+
+
+    await update.message.reply_text(
+
+        "📊 USTA 24 СТАТИСТИКА\n\n"
+
+        f"🆕 Янги: {yangi}\n"
+
+        f"🟡 Қабул қилинган: {qabul}\n"
+
+        f"🔵 Ишда: {ish}\n"
+
+        f"✅ Якунланган: {done}"
+
+    )
+
+
+
+
+
+# ==========================
+# РЕЙТИНГ
+# ==========================
+
+
+async def rating(update,context):
+
+
+    await update.message.reply_text(
+
+        "⭐ Устага баҳо беринг\n"
+
+        "1 дан 5 гача рақам ёзинг"
+
+    )
+
+
+    reviews[update.effective_user.id]={
+
+        "active":True
+
+    }
+
+
+
+
+
+
+
+# ==========================
+# ХАБАР ТАРҚАТИШ
+# ==========================
+
+
+async def send_all(update,context):
+
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+
+    msg=" ".join(context.args)
+
+
+    if not msg:
+        return
+
+
+
+    users_list=set()
+
+
+    for o in orders.values():
+
+        users_list.add(o["мижоз"])
+
+
+
+    count=0
+
+
+    for uid in users_list:
+
+        try:
+
+            await context.bot.send_message(
+
+                uid,
+
+                msg
+
+            )
+
+            count+=1
+
+
+        except:
+
+            pass
+
+
+
+    await update.message.reply_text(
+
+        f"📢 Хабар юборилди\n"
+
+        f"👥 {count}"
+
+    )
+
+
+
+
+
+
+# ==========================
+# EXCEL УЧУН
+# ==========================
+
+
+async def excel(update,context):
+
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+
+
+    text="№ | Мижоз | Телефон | Хизмат\n\n"
+
+
+
+    for oid,o in orders.items():
+
+        text += (
+
+            f"{oid} | "
+
+            f"{o['исм']} | "
+
+            f"{o['телефон']} | "
+
+            f"{o['хизмат']}\n"
+
+        )
+
+
+
+    await update.message.reply_text(
+
+        "📥 Excel учун маълумот:\n\n"
+
+        + text[:3500]
+
+    )
+
+
+
+
+
+
+
+# ==========================
+# BOT START
 # ==========================
 
 
@@ -733,11 +1307,8 @@ def main():
     application.add_handler(
 
         CommandHandler(
-
             "start",
-
             start
-
         )
 
     )
@@ -746,11 +1317,8 @@ def main():
     application.add_handler(
 
         CommandHandler(
-
             "admin",
-
-            admin
-
+            admin_panel
         )
 
     )
@@ -759,11 +1327,8 @@ def main():
     application.add_handler(
 
         CommandHandler(
-
             "stat",
-
-            statistic
-
+            statistics
         )
 
     )
@@ -772,23 +1337,27 @@ def main():
     application.add_handler(
 
         CommandHandler(
-
             "mijoz",
-
-            customers
-
+            mijozlar
         )
 
     )
 
+
+    application.add_handler(
+
+        CommandHandler(
+            "ustalar",
+            ustalar
+        )
+
+    )
 
 
     application.add_handler(
 
         CallbackQueryHandler(
-
-            order_button
-
+            order_callback
         )
 
     )
@@ -799,49 +1368,15 @@ def main():
         MessageHandler(
 
             filters.CONTACT |
-            filters.LOCATION,
-
-            message_handler
-
-        )
-
-    )
-
-
-    application.add_handler(
-
-        MessageHandler(
-
+            filters.LOCATION |
             filters.TEXT,
 
-            message_handler
+            client_message
 
         )
 
     )
 
-
-    application.add_handler(
-
-        MessageHandler(
-
-            filters.TEXT,
-
-            extra_handler
-
-        )
-
-    )
-
-
-
-    application.run_polling()
-
-
-
-
-
-if __name__=="__main__":
 
 
     Thread(
@@ -853,4 +1388,16 @@ if __name__=="__main__":
     ).start()
 
 
+
+    application.run_polling()
+
+
+
+
+
+
+if __name__=="__main__":
+
     main()
+
+    )
