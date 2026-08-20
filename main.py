@@ -1,15 +1,18 @@
 # =====================================================
 # USTA 24 PRO BOT
-# MAIN.PY 1/4
-# Мижоз + Буюртма ядроси
+# MAIN.PY 1/5
+# MIJOZ + USTA + ADMIN
 # =====================================================
+
 
 import os
 import logging
+
 from datetime import datetime
 from threading import Thread
 
 from flask import Flask
+
 
 from telegram import (
     Update,
@@ -18,6 +21,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup
 )
+
 
 from telegram.ext import (
     Application,
@@ -29,27 +33,37 @@ from telegram.ext import (
 )
 
 
+
 # =====================================================
-# СОЗЛАНМАЛАР
+# CONFIG
 # =====================================================
 
+
 TOKEN = os.getenv("BOT_TOKEN")
+
 ADMIN_ID = os.getenv("ADMIN_ID")
+
 MASTERS_GROUP_ID = os.getenv("MASTERS_GROUP_ID")
 
 
+
 if not TOKEN:
-    raise RuntimeError("BOT_TOKEN топилмади")
+    raise RuntimeError("BOT_TOKEN topilmadi")
+
 
 if not ADMIN_ID:
-    raise RuntimeError("ADMIN_ID топилмади")
+    raise RuntimeError("ADMIN_ID topilmadi")
+
 
 if not MASTERS_GROUP_ID:
-    raise RuntimeError("MASTERS_GROUP_ID топилмади")
+    raise RuntimeError("MASTERS_GROUP_ID topilmadi")
+
 
 
 ADMIN_ID = int(ADMIN_ID)
+
 MASTERS_GROUP_ID = int(MASTERS_GROUP_ID)
+
 
 
 logging.basicConfig(
@@ -61,20 +75,27 @@ logger = logging.getLogger("USTA24")
 
 
 
+
+
 # =====================================================
-# RENDER FLASK
+# FLASK RENDER
 # =====================================================
+
 
 app = Flask(__name__)
 
 
+
 @app.route("/")
 def home():
-    return "USTA 24 PRO ишлаяпти"
+
+    return "USTA 24 BOT ISHLAYAPTI"
+
 
 
 @app.route("/health")
 def health():
+
     return "OK"
 
 
@@ -90,9 +111,11 @@ def run_flask():
 
 
 
+
 # =====================================================
-# ВАҚТИНЧА БАЗА
+# DATABASE
 # =====================================================
+
 
 users = {}
 
@@ -102,7 +125,6 @@ masters = {}
 
 reviews = {}
 
-prices = {}
 
 
 order_id = 0
@@ -112,50 +134,51 @@ order_id = 0
 
 
 # =====================================================
-# ХИЗМАТЛАР
+# XIZMATLAR
 # =====================================================
+
 
 SERVICES = [
 
-    "🪑 Мебель йиғиш",
+"🪑 Мебель йиғиш",
 
-    "🛠 Мебель таъмирлаш",
+"🛠 Мебель таъмирлаш",
 
-    "🍽 Ошхона мебели",
+"🍽 Ошхона мебели",
 
-    "🚪 Шкаф купе",
+"🚪 Шкаф купе",
 
-    "🛏 Каравот йиғиш",
+"🛏 Каравот йиғиш",
 
-    "🪑 Стол ва стул",
+"🪑 Стол стул",
 
-    "📦 Мебель кўчириш",
+"📦 Мебель кўчириш",
 
-    "🚚 Уй кўчириш",
+"🚚 Уй кўчириш",
 
-    "🚛 Юк ташиш",
+"🚛 Юк ташиш",
 
-    "🔩 Сантехника",
+"🔩 Сантехника",
 
-    "⚡ Электр ишлари",
+"⚡ Электр ишлари",
 
-    "🔥 Иситиш тизими",
+"🔥 Иситиш тизими",
 
-    "🎨 Бўяш ишлари",
+"🎨 Бўёқ ишлари",
 
-    "🪟 Эшик ва дераза",
+"🪟 Эшик дераза",
 
-    "❄ Кондиционер",
+"❄ Кондиционер",
 
-    "📡 Интернет ўрнатиш",
+"📡 Интернет",
 
-    "🧹 Тозалаш",
+"🧹 Тозалаш",
 
-    "🔨 Пайвандлаш",
+"🔨 Пайвандлаш",
 
-    "🏠 Уста чақириш",
+"🏠 Уста чақириш",
 
-    "🔧 Бошқа хизмат"
+"🔧 Бошқа хизмат"
 
 ]
 
@@ -163,12 +186,43 @@ SERVICES = [
 
 
 
+
 # =====================================================
-# МЕНЮЛАР
+# STATUS
+# =====================================================
+
+
+STATUS = {
+
+
+"new":"🆕 Янги",
+
+"accepted":"🟡 Қабул қилинган",
+
+"process":"🔵 Иш жараёнида",
+
+"done":"✅ Якунланган",
+
+"cancel":"❌ Бекор қилинган",
+
+"reject":"🚫 Рад этилган"
+
+
+}
+
+
+
+
+
+
+
+# =====================================================
+# MENULAR
 # =====================================================
 
 
 def client_menu():
+
 
     return ReplyKeyboardMarkup(
 
@@ -189,15 +243,25 @@ def client_menu():
 
 
 
+
 def service_menu():
+
 
     return ReplyKeyboardMarkup(
 
-        [[x] for x in SERVICES],
+        [
+
+            [x]
+
+            for x in SERVICES
+
+        ],
 
         resize_keyboard=True
 
     )
+
+
 
 
 
@@ -208,19 +272,21 @@ def service_menu():
 # =====================================================
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def start(update:Update, context:ContextTypes.DEFAULT_TYPE):
 
 
     user = update.effective_user
+
 
 
     await update.message.reply_text(
 
         f"👋 Ассалому алайкум {user.first_name}\n\n"
 
-        "🏠 USTA 24 хизматлари\n\n"
+        "🏠 USTA 24\n\n"
 
-        "Керакли бўлимни танланг:",
+        "Хизмат танланг:",
 
         reply_markup=client_menu()
 
@@ -231,30 +297,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+
 # =====================================================
-# БУЮРТМА БОШЛАШ
+# BUYURTMA BOSHLASH
 # =====================================================
 
 
-async def new_order(update, context):
+
+async def new_order(update,context):
 
 
     uid = update.effective_user.id
 
 
+
     users[uid] = {
 
-        "қадам":"исм",
 
-        "исм":"",
+        "step":"name",
 
-        "телефон":"",
+        "name":"",
 
-        "хизмат":"",
+        "phone":"",
 
-        "манзил":"",
+        "service":"",
 
-        "изоҳ":""
+        "address":"",
+
+        "comment":""
+
 
     }
 
@@ -262,36 +333,44 @@ async def new_order(update, context):
 
     await update.message.reply_text(
 
+
         "📝 Буюртма бериш\n\n"
 
         "👤 Исмингизни ёзинг:"
 
+    )
 
 # =====================================================
-# MIJOZ BUYURTMA DAVOMI
-# MAIN.PY 2/4
+# MAIN.PY 2/5
+# MIJOZ BUYURTMA TIZIMI
 # =====================================================
 
 
 
-  async def client_message(update, context):
+async def client_handler(update, context):
+
 
     if not update.message:
         return
 
 
+
     uid = update.effective_user.id
+
 
     text = update.message.text or ""
 
 
-    # Буюртма бошлаш
+
+
+    # БУЮРТМА БОШЛАШ
 
     if text == "📝 Буюртма бериш":
 
-        await new_order(update, context)
+        await new_order(update,context)
 
         return
+
 
 
 
@@ -305,16 +384,24 @@ async def new_order(update, context):
 
 
 
-    # ==========================
+    step = data["step"]
+
+
+
+
+
+    # =====================
     # ИСМ
-    # ==========================
-
-    if data["қадам"] == "исм":
+    # =====================
 
 
-        data["исм"] = text
+    if step == "name":
 
-        data["қадам"] = "телефон"
+
+        data["name"] = text
+
+
+        data["step"] = "phone"
 
 
 
@@ -348,24 +435,30 @@ async def new_order(update, context):
 
 
 
-    # ==========================
+    # =====================
     # ТЕЛЕФОН
-    # ==========================
+    # =====================
 
-    if data["қадам"] == "телефон":
+
+    if step == "phone":
+
 
 
         if update.message.contact:
 
-            data["телефон"] = update.message.contact.phone_number
+
+            data["phone"] = update.message.contact.phone_number
+
 
         else:
 
-            data["телефон"] = text
+
+            data["phone"] = text
 
 
 
-        data["қадам"] = "хизмат"
+
+        data["step"] = "service"
 
 
 
@@ -384,20 +477,23 @@ async def new_order(update, context):
 
 
 
-    # ==========================
+
+    # =====================
     # ХИЗМАТ
-    # ==========================
-
-    if data["қадам"] == "хизмат":
+    # =====================
 
 
-        data["хизмат"] = text
-
-        data["қадам"] = "манзил"
+    if step == "service":
 
 
+        data["service"] = text
 
-        location_button = KeyboardButton(
+
+        data["step"] = "address"
+
+
+
+        location = KeyboardButton(
 
             "📍 Геолокация юбориш",
 
@@ -415,7 +511,7 @@ async def new_order(update, context):
 
                 [
 
-                    [location_button],
+                    [location],
 
                     ["✍️ Манзилни ёзиш"]
 
@@ -435,31 +531,37 @@ async def new_order(update, context):
 
 
 
-    # ==========================
+    # =====================
     # МАНЗИЛ
-    # ==========================
+    # =====================
 
-    if data["қадам"] == "манзил":
+
+    if step == "address":
 
 
         if update.message.location:
 
 
-            data["манзил"] = (
+            data["address"] = (
 
-                f"{update.message.location.latitude},"
+                str(update.message.location.latitude)
 
-                f"{update.message.location.longitude}"
+                + ","
+
+                + str(update.message.location.longitude)
 
             )
 
+
         else:
 
-            data["манзил"] = text
+
+            data["address"] = text
 
 
 
-        data["қадам"] = "изоҳ"
+
+        data["step"] = "comment"
 
 
 
@@ -477,18 +579,21 @@ async def new_order(update, context):
 
 
 
-    # ==========================
+
+    # =====================
     # ИЗОҲ
-    # ==========================
-
-    if data["қадам"] == "изоҳ":
+    # =====================
 
 
-        data["изоҳ"] = text
+    if step == "comment":
 
 
 
-        await create_order(
+        data["comment"] = text
+
+
+
+        await send_order(
 
             update,
 
@@ -499,7 +604,8 @@ async def new_order(update, context):
         )
 
 
-        users.pop(uid, None)
+
+        users.pop(uid,None)
 
 
         return
@@ -509,12 +615,15 @@ async def new_order(update, context):
 
 
 
+
 # =====================================================
-# БУЮРТМА ЯРАТИШ
+# BUYURTMA YARATISH
 # =====================================================
 
 
-async def create_order(update, context, data):
+
+async def send_order(update,context,data):
+
 
     global order_id
 
@@ -529,34 +638,26 @@ async def create_order(update, context, data):
     orders[oid] = {
 
 
-        "id": oid,
+        "id":oid,
 
+        "customer_id":update.effective_user.id,
 
-        "мижоз": update.effective_user.id,
+        "name":data["name"],
 
+        "phone":data["phone"],
 
-        "исм": data["исм"],
+        "service":data["service"],
 
+        "address":data["address"],
 
-        "телефон": data["телефон"],
+        "comment":data["comment"],
 
+        "status":"new",
 
-        "хизмат": data["хизмат"],
+        "master":None,
 
+        "created":datetime.now()
 
-        "манзил": data["манзил"],
-
-
-        "изоҳ": data["изоҳ"],
-
-
-        "ҳолат": "янги",
-
-
-        "уста": None,
-
-
-        "вақт": datetime.now()
 
     }
 
@@ -601,25 +702,25 @@ async def create_order(update, context, data):
 
 
 
-    message = (
+
+    text = (
 
         "🆕 ЯНГИ БУЮРТМА\n\n"
 
-        f"🔢 Буюртма №{oid}\n\n"
+        f"🔢 №{oid}\n"
 
-        f"👤 Мижоз: {data['исм']}\n"
+        f"👤 Мижоз: {data['name']}\n"
 
-        f"📞 Телефон: {data['телефон']}\n"
+        f"📞 Телефон: {data['phone']}\n"
 
-        f"🛠 Хизмат: {data['хизмат']}\n"
+        f"🛠 Хизмат: {data['service']}\n"
 
-        f"📍 Манзил: {data['манзил']}\n"
+        f"📍 Манзил: {data['address']}\n"
 
-        f"📝 Изоҳ: {data['изоҳ']}\n\n"
-
-        "👨‍🔧 Уста қабул қилиши мумкин"
+        f"📝 Изоҳ: {data['comment']}"
 
     )
+
 
 
 
@@ -629,7 +730,7 @@ async def create_order(update, context, data):
 
         chat_id=MASTERS_GROUP_ID,
 
-        text=message,
+        text=text,
 
         reply_markup=keyboard
 
@@ -639,9 +740,10 @@ async def create_order(update, context, data):
 
 
 
+
     await update.message.reply_text(
 
-        "✅ Буюртмангиз қабул қилинди\n\n"
+        f"✅ Буюртмангиз қабул қилинди.\n\n"
 
         f"🔢 Буюртма №{oid}\n\n"
 
@@ -652,14 +754,11 @@ async def create_order(update, context, data):
         "+998 77 069 00 03",
 
         reply_markup=client_menu()
-
-        )
-
+        
 # =====================================================
-# USTA TIZIMI
-# MAIN.PY 3/4
+# MAIN.PY 3/5
+# USTA BUYURTMA BOSHQARUVI
 # =====================================================
-
 
 
 async def order_callback(update, context):
@@ -672,14 +771,12 @@ async def order_callback(update, context):
     data = query.data
 
 
-
     if "_" not in data:
         return
 
 
 
     action, oid = data.split("_")
-
 
     oid = int(oid)
 
@@ -697,6 +794,8 @@ async def order_callback(update, context):
 
 
     order = orders[oid]
+
+
 
 
 
@@ -723,11 +822,11 @@ async def order_callback(update, context):
 
 
 
-        order["ҳолат"] = "қабул қилинган"
+        order["status"] = "accepted"
 
-        order["уста"] = master
+        order["master"] = master
 
-        order["уста_id"] = user.id
+        order["master_id"] = user.id
 
 
 
@@ -738,26 +837,18 @@ async def order_callback(update, context):
 
             f"🔢 №{oid}\n"
 
-            f"👤 Мижоз: {order['исм']}\n"
+            f"👨‍🔧 Уста: {master}\n\n"
 
-            f"📞 Телефон: {order['телефон']}\n"
-
-            f"🛠 Хизмат: {order['хизмат']}\n"
-
-            f"📍 Манзил: {order['манзил']}\n\n"
-
-            f"👨‍🔧 Уста: {master}"
+            "Ишни бошлаш мумкин."
 
         )
 
 
 
 
-
         await context.bot.send_message(
 
-            chat_id=order["мижоз"],
-
+            chat_id=order["customer_id"],
 
             text=(
 
@@ -780,6 +871,7 @@ async def order_callback(update, context):
 
 
 
+
     # ==========================
     # РАД ЭТИШ
     # ==========================
@@ -788,7 +880,7 @@ async def order_callback(update, context):
     elif action == "reject":
 
 
-        order["ҳолат"] = "рад этилган"
+        order["status"] = "reject"
 
 
 
@@ -802,14 +894,11 @@ async def order_callback(update, context):
 
         await context.bot.send_message(
 
-            order["мижоз"],
-
+            order["customer_id"],
 
             f"🚫 №{oid} буюртма рад этилди.\n\n"
 
-            "☎️ USTA 24\n"
-
-            "+998 77 069 00 03"
+            "Бошқа уста бириктирилади."
 
         )
 
@@ -828,7 +917,7 @@ async def order_callback(update, context):
     elif action == "start":
 
 
-        order["ҳолат"] = "иш жараёнида"
+        order["status"] = "process"
 
 
 
@@ -842,14 +931,9 @@ async def order_callback(update, context):
 
         await context.bot.send_message(
 
-            order["мижоз"],
+            order["customer_id"],
 
-
-            f"🔵 №{oid} буюртма бўйича иш бошланди.\n\n"
-
-            "☎️ USTA 24\n"
-
-            "+998 77 069 00 03"
+            f"🔵 №{oid} буюртма бўйича иш бошланди."
 
         )
 
@@ -867,7 +951,7 @@ async def order_callback(update, context):
     elif action == "done":
 
 
-        order["ҳолат"] = "якунланган"
+        order["status"] = "done"
 
 
 
@@ -881,19 +965,13 @@ async def order_callback(update, context):
 
         await context.bot.send_message(
 
-            order["мижоз"],
-
+            order["customer_id"],
 
             f"✅ №{oid} буюртма якунланди.\n\n"
 
-            "⭐ Устага баҳо беринг.\n\n"
-
-            "☎️ USTA 24\n"
-
-            "+998 77 069 00 03"
+            "⭐ Устага баҳо беришингиз мумкин."
 
         )
-
 
 
 
@@ -909,13 +987,13 @@ async def order_callback(update, context):
     elif action == "cancel":
 
 
-        order["ҳолат"] = "бекор қилинган"
+        order["status"] = "cancel"
 
 
 
         await query.edit_message_text(
 
-            f"❌ №{oid} бекор қилинди"
+            f"❌ №{oid} буюртма бекор қилинди"
 
         )
 
@@ -923,81 +1001,113 @@ async def order_callback(update, context):
 
         await context.bot.send_message(
 
-            order["мижоз"],
+            order["customer_id"],
 
-
-            f"❌ №{oid} буюртма бекор қилинди.\n\n"
-
-            "☎️ USTA 24\n"
-
-            "+998 77 069 00 03"
+            f"❌ №{oid} буюртма бекор қилинди."
 
         )
 
-
 # =====================================================
+# MAIN.PY 4/5
 # ADMIN TIZIMI
-# MAIN.PY 4/4
 # =====================================================
 
 
-async def admin_panel(update, context):
 
-    if update.effective_user.id != ADMIN_ID:
-        return
+def admin_menu():
 
 
-    await update.message.reply_text(
+    return ReplyKeyboardMarkup(
 
-        "👑 USTA 24 АДМИН\n\n"
+        [
 
-        "/stat - 📊 Статистика\n"
-        "/mijoz - 👤 Мижозлар\n"
-        "/ustalar - 👨‍🔧 Усталар\n"
-        "/hisobot - 📈 Ҳисобот\n"
-        "/excel - 📥 Excel маълумот\n"
+            ["👤 Мижоз базаси"],
+
+            ["👨‍🔧 Усталар"],
+
+            ["📊 Статистика"],
+
+            ["📢 Хабар тарқатиш"]
+
+        ],
+
+        resize_keyboard=True
 
     )
 
 
 
 
+
+
+
+async def admin_start(update,context):
+
+
+    if update.effective_user.id != ADMIN_ID:
+
+        await update.message.reply_text(
+            "❌ Сиз админ эмассиз"
+        )
+
+        return
+
+
+
+    await update.message.reply_text(
+
+        "👑 USTA 24 АДМИН\n\n"
+
+        "Бўлимни танланг:",
+
+        reply_markup=admin_menu()
+
+    )
+
+
+
+
+
+
+
 # ==========================
-# МИЖОЗ БАЗАСИ
+# MIJOZ BAZASI
 # ==========================
 
 
-async def mijozlar(update,context):
+async def customer_base(update,context):
+
 
     if update.effective_user.id != ADMIN_ID:
         return
 
 
+
     text = "👤 МИЖОЗЛАР БАЗАСИ\n\n"
 
 
-    seen=set()
+
+    for o in orders.values():
 
 
-    for order in orders.values():
+        text += (
 
-        uid=order["мижоз"]
+            f"👤 {o['name']}\n"
+
+            f"📞 {o['phone']}\n"
+
+            f"🛠 {o['service']}\n"
+
+            "────────────\n"
+
+        )
 
 
-        if uid not in seen:
 
-            seen.add(uid)
+    if len(text) < 30:
 
+        text += "Мижозлар йўқ"
 
-            text += (
-
-                f"👤 {order['исм']}\n"
-
-                f"📞 {order['телефон']}\n"
-
-                "──────────\n"
-
-            )
 
 
     await update.message.reply_text(text)
@@ -1006,38 +1116,102 @@ async def mijozlar(update,context):
 
 
 
+
+
+
 # ==========================
-# УСТАЛАР
+# USTALAR
 # ==========================
 
 
-async def add_master(update,context):
+async def masters_list(update,context):
+
 
     if update.effective_user.id != ADMIN_ID:
         return
 
 
+
+    text="👨‍🔧 УСТАЛАР\n\n"
+
+
+
+    if not masters:
+
+
+        text+="Усталар қўшилмаган"
+
+
+
+    else:
+
+
+        for mid,m in masters.items():
+
+
+            text += (
+
+                f"🆔 {mid}\n"
+
+                f"👨‍🔧 {m['name']}\n"
+
+                f"📞 {m['phone']}\n"
+
+                "────────\n"
+
+            )
+
+
+
+    await update.message.reply_text(text)
+
+
+
+
+
+
+
+# ==========================
+# USTA QO'SHISH
+# ==========================
+
+
+async def add_master(update,context):
+
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+
+
     try:
 
-        data=update.message.text.split("|")
+
+        parts = update.message.text.split("|")
 
 
-        mid=int(data[0])
 
-        name=data[1]
+        mid = int(parts[0].strip())
 
-        phone=data[2]
+
+        name = parts[1].strip()
+
+
+        phone = parts[2].strip()
+
 
 
         masters[mid]={
 
-            "исм":name,
 
-            "телефон":phone,
+            "name":name,
 
-            "буюртма":0
+            "phone":phone,
+
+            "orders":0
 
         }
+
 
 
 
@@ -1050,7 +1224,9 @@ async def add_master(update,context):
         )
 
 
+
     except:
+
 
         await update.message.reply_text(
 
@@ -1065,37 +1241,11 @@ async def add_master(update,context):
 
 
 
-async def ustalar(update,context):
-
-
-    text="👨‍🔧 УСТАЛАР\n\n"
-
-
-
-    for mid,m in masters.items():
-
-        text += (
-
-            f"🆔 {mid}\n"
-
-            f"👨‍🔧 {m['исм']}\n"
-
-            f"📞 {m['телефон']}\n"
-
-            "────────\n"
-
-        )
-
-
-    await update.message.reply_text(text)
-
-
-
 
 
 
 # ==========================
-# СТАТИСТИКА
+# STATISTIKA
 # ==========================
 
 
@@ -1107,26 +1257,44 @@ async def statistics(update,context):
 
 
 
-    yangi=0
-    qabul=0
-    ish=0
+
+    total=len(orders)
+
+
+    accepted=0
+
+    process=0
+
     done=0
+
+    cancel=0
+
 
 
 
     for o in orders.values():
 
-        if o["ҳолат"]=="янги":
-            yangi+=1
 
-        elif o["ҳолат"]=="қабул қилинган":
-            qabul+=1
+        if o["status"]=="accepted":
 
-        elif o["ҳолат"]=="иш жараёнида":
-            ish+=1
+            accepted+=1
 
-        elif o["ҳолат"]=="якунланган":
+
+        elif o["status"]=="process":
+
+            process+=1
+
+
+        elif o["status"]=="done":
+
             done+=1
+
+
+        elif o["status"]=="cancel":
+
+            cancel+=1
+
+
 
 
 
@@ -1134,43 +1302,19 @@ async def statistics(update,context):
 
         "📊 USTA 24 СТАТИСТИКА\n\n"
 
-        f"🆕 Янги: {yangi}\n"
+        f"📋 Жами: {total}\n"
 
-        f"🟡 Қабул қилинган: {qabul}\n"
+        f"🟡 Қабул: {accepted}\n"
 
-        f"🔵 Ишда: {ish}\n"
+        f"🔵 Ишда: {process}\n"
 
-        f"✅ Якунланган: {done}"
+        f"✅ Якунланган: {done}\n"
 
-    )
-
-
-
-
-
-# ==========================
-# РЕЙТИНГ
-# ==========================
-
-
-async def rating(update,context):
-
-
-    await update.message.reply_text(
-
-        "⭐ Устага баҳо беринг\n"
-
-        "1 дан 5 гача рақам ёзинг"
+        f"❌ Бекор: {cancel}"
 
     )
 
 
-    reviews[update.effective_user.id]={
-
-        "active":True
-
-    }
-
 
 
 
@@ -1178,55 +1322,64 @@ async def rating(update,context):
 
 
 # ==========================
-# ХАБАР ТАРҚАТИШ
+# XABAR TARQATISH
 # ==========================
 
 
-async def send_all(update,context):
+async def broadcast(update,context):
 
 
     if update.effective_user.id != ADMIN_ID:
         return
 
 
+
     msg=" ".join(context.args)
 
 
+
     if not msg:
+
+
+        await update.message.reply_text(
+
+            "Формат:\n/send Хабар"
+
+        )
+
         return
 
-
-
-    users_list=set()
-
-
-    for o in orders.values():
-
-        users_list.add(o["мижоз"])
 
 
 
     count=0
 
 
-    for uid in users_list:
+
+    for o in orders.values():
+
 
         try:
 
+
             await context.bot.send_message(
 
-                uid,
+                o["customer_id"],
 
                 msg
 
             )
+
 
             count+=1
 
 
         except:
 
+
             pass
+
+
 
 
 
@@ -1234,55 +1387,49 @@ async def send_all(update,context):
 
         f"📢 Хабар юборилди\n"
 
-        f"👥 {count}"
-
-    )
-
-
-
-
-
-
-# ==========================
-# EXCEL УЧУН
-# ==========================
-
-
-async def excel(update,context):
-
-
-    if update.effective_user.id != ADMIN_ID:
-        return
+        f"👥 {count} та мижоз"
+# =====================================================
+# MAIN.PY 5/5
+# HANDLERS + START
+# =====================================================
 
 
 
-    text="№ | Мижоз | Телефон | Хизмат\n\n"
+async def button_handler(update,context):
 
 
+    text = update.message.text
 
-    for oid,o in orders.items():
 
-        text += (
+    if text == "👤 Мижоз базаси":
 
-            f"{oid} | "
+        await customer_base(update,context)
 
-            f"{o['исм']} | "
 
-            f"{o['телефон']} | "
+    elif text == "👨‍🔧 Усталар":
 
-            f"{o['хизмат']}\n"
+        await masters_list(update,context)
+
+
+    elif text == "📊 Статистика":
+
+        await statistics(update,context)
+
+
+    elif text == "📢 Хабар тарқатиш":
+
+        await update.message.reply_text(
+
+            "Хабар юбориш:\n"
+            "/send матн"
 
         )
 
 
 
-    await update.message.reply_text(
+    else:
 
-        "📥 Excel учун маълумот:\n\n"
-
-        + text[:3500]
-
-    )
+        await client_handler(update,context)
 
 
 
@@ -1290,9 +1437,21 @@ async def excel(update,context):
 
 
 
-# ==========================
-# BOT START
-# ==========================
+async def send_command(update,context):
+
+
+    await broadcast(update,context)
+
+
+
+
+
+
+
+# =====================================================
+# BOT ISHGA TUSHISH
+# =====================================================
+
 
 
 def main():
@@ -1304,64 +1463,69 @@ def main():
 
 
 
+
+
+    # START
+
     application.add_handler(
 
         CommandHandler(
+
             "start",
+
             start
+
         )
 
     )
 
 
+
+    # ADMIN
+
     application.add_handler(
 
         CommandHandler(
+
             "admin",
-            admin_panel
+
+            admin_start
+
         )
 
     )
+
 
 
     application.add_handler(
 
         CommandHandler(
-            "stat",
-            statistics
+
+            "send",
+
+            send_command
+
         )
 
     )
 
 
-    application.add_handler(
 
-        CommandHandler(
-            "mijoz",
-            mijozlar
-        )
-
-    )
-
-
-    application.add_handler(
-
-        CommandHandler(
-            "ustalar",
-            ustalar
-        )
-
-    )
-
+    # USTA BUTTON
 
     application.add_handler(
 
         CallbackQueryHandler(
+
             order_callback
+
         )
 
     )
 
+
+
+    # TEXT
 
     application.add_handler(
 
@@ -1371,11 +1535,13 @@ def main():
             filters.LOCATION |
             filters.TEXT,
 
-            client_message
+            button_handler
 
         )
 
     )
+
+
 
 
 
@@ -1389,6 +1555,13 @@ def main():
 
 
 
+
+    print(
+        "USTA 24 BOT ISHLADI"
+    )
+
+
+
     application.run_polling()
 
 
@@ -1396,8 +1569,11 @@ def main():
 
 
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
 
     main()
+
+    )
 
     )
