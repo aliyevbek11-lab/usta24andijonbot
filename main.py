@@ -1416,7 +1416,6 @@ async def order_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("⭐ 4", callback_data=f"rate:{order_id}:4"),
                 InlineKeyboardButton("⭐ 5", callback_data=f"rate:{order_id}:5"),
             ]
-        ])
         
         try:
             await context.bot.send_message(
