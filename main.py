@@ -1,5 +1,5 @@
 # ============================================================
-# USTA 24 ANDIJON - FULL MAIN.PY (TO'LIQ TUZATILGAN)
+# USTA 24 ANDIJON - FULL MAIN.PY (TUZATILGAN)
 # ============================================================
 
 import os
@@ -18,7 +18,6 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputFile,
-    ChatType,  # ✅ TO'G'RI IMPORT
 )
 
 from telegram.ext import (
@@ -124,16 +123,20 @@ ORDER_CONFIRM = 106
 MASTER_PHONE = 200
 
 # ============================================================
-# CHAT HELPERS
+# CHAT HELPERS - ChatType SIZ
 # ============================================================
 
 def is_private_chat(update: Update) -> bool:
     chat = update.effective_chat
-    return bool(chat and chat.type == ChatType.PRIVATE)
+    if not chat:
+        return False
+    return chat.type == "private"
 
 def is_group_chat(update: Update) -> bool:
     chat = update.effective_chat
-    return bool(chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP))
+    if not chat:
+        return False
+    return chat.type in ("group", "supergroup")
 
 # ============================================================
 # ROLE HELPERS
@@ -2538,28 +2541,28 @@ def main():
     order_conversation = ConversationHandler(
         entry_points=[
             MessageHandler(
-                filters.ChatType.PRIVATE & filters.Regex(r"^📝 Buyurtma berish$"),
+                filters.PRIVATE & filters.Regex(r"^📝 Buyurtma berish$"),
                 order_start,
             )
         ],
         states={
-            ORDER_NAME: [MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, order_name)],
+            ORDER_NAME: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, order_name)],
             ORDER_PHONE: [
-                MessageHandler(filters.ChatType.PRIVATE & filters.CONTACT, order_phone),
-                MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, order_phone),
+                MessageHandler(filters.PRIVATE & filters.CONTACT, order_phone),
+                MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, order_phone),
             ],
             ORDER_LOCATION: [
-                MessageHandler(filters.ChatType.PRIVATE & filters.LOCATION, order_location),
-                MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, order_location),
+                MessageHandler(filters.PRIVATE & filters.LOCATION, order_location),
+                MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, order_location),
             ],
-            ORDER_ADDRESS: [MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, order_address)],
-            ORDER_SERVICE: [MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, order_service)],
-            ORDER_DESCRIPTION: [MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, order_description)],
-            ORDER_CONFIRM: [MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, order_confirm)],
+            ORDER_ADDRESS: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, order_address)],
+            ORDER_SERVICE: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, order_service)],
+            ORDER_DESCRIPTION: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, order_description)],
+            ORDER_CONFIRM: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, order_confirm)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_order),
-            MessageHandler(filters.ChatType.PRIVATE & filters.Regex(r"^❌ Bekor qilish$"), cancel_order),
+            MessageHandler(filters.PRIVATE & filters.Regex(r"^❌ Bekor qilish$"), cancel_order),
         ],
         allow_reentry=False,
     )
@@ -2570,7 +2573,7 @@ def main():
     application.add_handler(CommandHandler("usta_ochirish", admin_delete_master))
     application.add_handler(CommandHandler("export", admin_export))
     application.add_handler(CallbackQueryHandler(callback_handler))
-    application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, text_router))
+    application.add_handler(MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, text_router))
     application.add_error_handler(error_handler)
     
     logger.info("Telegram polling boshlandi...")
