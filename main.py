@@ -945,7 +945,7 @@ async def order_phone(
 
 
 # ============================================================
-# ORDER LOCATION
+# ORDER LOCATION - TUZATILGAN
 # ============================================================
 
 async def order_location(
@@ -3799,7 +3799,7 @@ async def error_handler(
 
 
 # ============================================================
-# MAIN
+# MAIN - TUZATILGAN
 # ============================================================
 
 def main():
@@ -3813,16 +3813,14 @@ def main():
     )
 
     # ========================================================
-    # ORDER CONVERSATION
+    # ORDER CONVERSATION - TUZATILGAN
     # ========================================================
 
     order_conversation = ConversationHandler(
 
         entry_points=[
             MessageHandler(
-                filters.Regex(
-                    r"^📝 Buyurtma berish$"
-                ),
+                filters.Regex(r"^📝 Buyurtma berish$") & filters.ChatType.PRIVATE,
                 order_start,
             )
         ],
@@ -3835,8 +3833,7 @@ def main():
 
             ORDER_NAME: [
                 MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
                     order_name,
                 )
             ],
@@ -3847,29 +3844,26 @@ def main():
 
             ORDER_PHONE: [
                 MessageHandler(
-                    filters.CONTACT,
+                    filters.CONTACT & filters.ChatType.PRIVATE,
                     order_phone,
                 ),
                 MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
                     order_phone,
                 ),
             ],
 
             # ------------------------------------------------
-            # LOCATION
-            # LOCATION FILTER BIRINCHI!
+            # LOCATION - TUZATILGAN
             # ------------------------------------------------
 
             ORDER_LOCATION: [
                 MessageHandler(
-                    filters.LOCATION,
+                    filters.LOCATION & ~filters.COMMAND & filters.ChatType.PRIVATE,
                     order_location,
                 ),
                 MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
                     order_location,
                 ),
             ],
@@ -3880,8 +3874,7 @@ def main():
 
             ORDER_SERVICE: [
                 MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
                     order_service,
                 )
             ],
@@ -3892,8 +3885,7 @@ def main():
 
             ORDER_ADDRESS: [
                 MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
                     order_address,
                 )
             ],
@@ -3904,8 +3896,7 @@ def main():
 
             ORDER_DESCRIPTION: [
                 MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
                     order_description,
                 )
             ],
@@ -3916,8 +3907,7 @@ def main():
 
             ORDER_CONFIRM: [
                 MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
                     order_confirm,
                 )
             ],
@@ -3929,9 +3919,7 @@ def main():
                 cancel_order,
             ),
             MessageHandler(
-                filters.Regex(
-                    r"^❌ Bekor qilish$"
-                ),
+                filters.Regex(r"^❌ Bekor qilish$") & filters.ChatType.PRIVATE,
                 cancel_order,
             ),
         ],
@@ -3960,12 +3948,11 @@ def main():
 
             MASTER_PHONE: [
                 MessageHandler(
-                    filters.CONTACT,
+                    filters.CONTACT & filters.ChatType.PRIVATE,
                     master_register_phone,
                 ),
                 MessageHandler(
-                    filters.TEXT
-                    & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
                     master_register_phone,
                 ),
             ],
@@ -4030,13 +4017,12 @@ def main():
     )
 
     # ========================================================
-    # GENERAL TEXT
+    # GENERAL TEXT - FAQAT PRIVATE CHAT
     # ========================================================
 
     application.add_handler(
         MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
+            filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
             text_router,
         )
     )
