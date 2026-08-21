@@ -3226,10 +3226,7 @@ async def admin_broadcast_process(
         reply_markup=admin_menu(),
     )
 
-    return True
-
-
-# ============================================================
+    return True# ============================================================
 # CALLBACKS
 # ============================================================
 
@@ -3617,101 +3614,15 @@ async def text_router(
 
 
 # ============================================================
-# REMINDER SYSTEM
+# REMINDER SYSTEM - ЎЧИРИЛДИ (ВАҚТИНЧА)
 # ============================================================
 
-async def reminder_loop(
-    application: Application,
-):
-
-    logger.info(
-        "Reminder tizimi ishga tushdi."
-    )
-
-    while True:
-
-        try:
-
-            async with DB.acquire() as conn:
-
-                rows = await conn.fetch(
-                    """
-                    SELECT
-                        r.id,
-                        r.order_id,
-                        r.user_id,
-                        r.reminder_type,
-                        o.status
-                    FROM reminders r
-                    LEFT JOIN orders o
-                    ON o.id=r.order_id
-                    WHERE r.sent=FALSE
-                    AND r.remind_at <= NOW()
-                    LIMIT 50
-                    """
-                )
-
-                for row in rows:
-
-                    message = (
-                        "🔔 USTA 24 ESLATMA\n\n"
-                        f"📋 Buyurtma: "
-                        f"#{row['order_id']}\n"
-                    )
-
-                    if row["reminder_type"] == "2h":
-
-                        message += (
-                            "Buyurtma qabul qilinganiga "
-                            "2 soat bo‘ldi."
-                        )
-
-                    elif row["reminder_type"] == "6h":
-
-                        message += (
-                            "Ish jarayonidagi buyurtmangiz "
-                            "bo‘yicha eslatma."
-                        )
-
-                    elif row["reminder_type"] == "24h":
-
-                        message += (
-                            "⭐ Ustaga baho berishni "
-                            "unutmang."
-                        )
-
-                    try:
-
-                        await application.bot.send_message(
-                            chat_id=row["user_id"],
-                            text=message,
-                        )
-
-                    except Exception:
-                        pass
-
-                    await conn.execute(
-                        """
-                        UPDATE reminders
-                        SET sent=TRUE
-                        WHERE id=$1
-                        """,
-                        row["id"],
-                    )
-
-        except Exception:
-
-            logger.exception(
-                "Reminder loop error"
-            )
-
-        await asyncio.sleep(
-            60
-        )
+# async def reminder_loop(...):
+#     pass
 
 
 # ============================================================
-# POST INIT
+# POST INIT - ТЎҒРИЛАНДИ
 # ============================================================
 
 async def post_init(
@@ -3722,36 +3633,17 @@ async def post_init(
 
     await init_db()
 
-    REMINDER_TASK = asyncio.create_task(
-        reminder_loop(application)
-    )
+    # ❌ REMINDER ВАҚТИНЧА ЎЧИРИЛДИ
+    # REMINDER_TASK = asyncio.create_task(
+    #     reminder_loop(application)
+    # )
 
-    logger.info(
-        "=================================="
-    )
-
-    logger.info(
-        "USTA 24 ANDIJON ISHGA TUSHDI"
-    )
-
-    logger.info(
-        "ADMIN_ID=%s",
-        ADMIN_ID,
-    )
-
-    logger.info(
-        "DISPATCHER_ID=%s",
-        DISPATCHER_ID,
-    )
-
-    logger.info(
-        "MASTERS_GROUP_ID=%s",
-        MASTERS_GROUP_ID,
-    )
-
-    logger.info(
-        "=================================="
-    )
+    logger.info("==================================")
+    logger.info("USTA 24 ANDIJON ISHGA TUSHDI")
+    logger.info("ADMIN_ID=%s", ADMIN_ID)
+    logger.info("DISPATCHER_ID=%s", DISPATCHER_ID)
+    logger.info("MASTERS_GROUP_ID=%s", MASTERS_GROUP_ID)
+    logger.info("==================================")
 
 
 # ============================================================
