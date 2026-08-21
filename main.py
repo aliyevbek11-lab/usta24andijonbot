@@ -40,7 +40,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = os.getenv("ADMIN_ID")
 MASTERS_GROUP_ID = os.getenv("MASTERS_GROUP_ID")
 DISPATCHER_ID = os.getenv("DISPATCHER_ID")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://your-domain.com/webhook
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Optional - agar bo'lmasa polling ishlaydi
 PORT = int(os.getenv("PORT", 8080))
 
 if not TOKEN:
@@ -55,9 +55,6 @@ if not ADMIN_ID:
 if not MASTERS_GROUP_ID:
     raise RuntimeError("MASTERS_GROUP_ID topilmadi")
 
-if not WEBHOOK_URL:
-    logger.warning("⚠️ WEBHOOK_URL topilmadi, polling rejimida ishlaydi")
-
 ADMIN_ID = int(ADMIN_ID)
 MASTERS_GROUP_ID = int(MASTERS_GROUP_ID)
 
@@ -65,6 +62,12 @@ if DISPATCHER_ID:
     DISPATCHER_ID = int(DISPATCHER_ID)
 else:
     DISPATCHER_ID = None
+
+# Webhook URL optional
+if WEBHOOK_URL:
+    logger.info(f"✅ Webhook URL: {WEBHOOK_URL}")
+else:
+    logger.info("ℹ️ WEBHOOK_URL topilmadi, polling rejimida ishlaydi")
 
 
 # ============================================================
@@ -80,12 +83,10 @@ logger = logging.getLogger("USTA24")
 
 
 # ============================================================
-# FLASK APP (WEBHOOK uchun)
+# FLASK APP
 # ============================================================
 
 flask_app = Flask(__name__)
-
-# Global application reference
 _application = None
 
 @flask_app.route('/')
@@ -94,7 +95,7 @@ def health():
         'status': 'ok',
         'time': datetime.now().isoformat(),
         'service': 'USTA24 Orders Bot',
-        'webhook': bool(WEBHOOK_URL)
+        'mode': 'webhook' if WEBHOOK_URL else 'polling'
     })
 
 @flask_app.route('/stats')
@@ -124,15 +125,11 @@ async def webhook():
         return jsonify({'error': 'Bot not initialized'}), 503
     
     try:
-        # Get update data
         data = request.get_json()
         if not data:
             return jsonify({'error': 'No data'}), 400
         
-        # Create update object
         update = Update.de_json(data, _application.bot)
-        
-        # Process update
         await _application.process_update(update)
         
         return jsonify({'status': 'ok'}), 200
@@ -164,7 +161,7 @@ async def set_webhook():
 
 @flask_app.route('/delete_webhook', methods=['GET', 'POST'])
 async def delete_webhook():
-    """Delete webhook (switch to polling)"""
+    """Delete webhook"""
     global _application
     
     if not _application:
@@ -198,7 +195,7 @@ async def webhook_info():
 
 
 # ============================================================
-# DATABASE
+# DATABASE (qisqa versiya)
 # ============================================================
 
 class Database:
@@ -228,7 +225,6 @@ class Database:
     @classmethod
     async def create_tables(cls):
         async with cls.pool.acquire() as conn:
-            # Users table
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -241,7 +237,6 @@ class Database:
                 )
             ''')
             
-            # Masters table
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS masters (
                     user_id BIGINT PRIMARY KEY,
@@ -257,7 +252,6 @@ class Database:
                 )
             ''')
             
-            # Dispatchers table
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS dispatchers (
                     user_id BIGINT PRIMARY KEY,
@@ -267,7 +261,6 @@ class Database:
                 )
             ''')
             
-            # Orders table
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS orders (
                     id SERIAL PRIMARY KEY,
@@ -289,7 +282,6 @@ class Database:
                 )
             ''')
             
-            # Order history
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS order_history (
                     id SERIAL PRIMARY KEY,
@@ -301,7 +293,6 @@ class Database:
                 )
             ''')
             
-            # Indexes
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)')
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)')
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_orders_master_id ON orders(master_id)')
@@ -311,7 +302,7 @@ class Database:
 
 
 # ============================================================
-# CONSTANTS
+# DATABASE HELPERS (qisqa)
 # ============================================================
 
 ORDER_STATUSES = {
@@ -323,11 +314,246 @@ ORDER_STATUSES = {
     'rejected': {'emoji': '🚫', 'name': 'Рад этилган'}
 }
 
-STATUS_FLOW = {
-    'new': 'accepted',
-    'accepted': 'in_progress',
-    'in_progress': 'completed'
-}
+class UserDB:
+    @staticmethod
+    async def get_or_create(user_id: int, username: str = None, full_name: str = None):
+        async with Database.pool.acquire() as conn:
+            user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
+            if not user:
+                await conn.execute('''
+                    INSERT INTO users (user_id, username, full_name)
+                    VALUES ($1, $2, $3)
+                ''', user_id, username, full_name)
+                user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
+            return dict(user)
+
+    @staticmethod
+    async def get_role(user_id: int) -> str:
+        if user_id == ADMIN_ID:
+            return 'admin'
+        
+        async with Database.pool.acquire() as conn:
+            master = await conn.fetchrow('SELECT user_id FROM masters WHERE user_id = $1', user_id)
+            if master:
+                return 'master'
+            
+            if DISPATCHER_ID and user_id == DISPATCHER_ID:
+                return 'dispatcher'
+            
+            dispatcher = await conn.fetchrow('SELECT user_id FROM dispatchers WHERE user_id = $1', user_id)
+            if dispatcher:
+                return 'dispatcher'
+            
+            return 'user'
+
+
+class OrderDB:
+    @staticmethod
+    async def create(user_id: int, service: str, address: str, phone: str, description: str = "") -> dict:
+        order_number = f"ORD-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+        
+        async with Database.pool.acquire() as conn:
+            order_id = await conn.fetchval('''
+                INSERT INTO orders (order_number, user_id, service, address, phone, description)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING id
+            ''', order_number, user_id, service, address, phone, description)
+            
+            order = await conn.fetchrow('SELECT * FROM orders WHERE id = $1', order_id)
+            
+            await conn.execute('''
+                INSERT INTO order_history (order_number, status, changed_by)
+                VALUES ($1, $2, $3)
+            ''', order_number, 'new', user_id)
+            
+            return dict(order)
+
+    @staticmethod
+    async def get_by_number(order_number: str) -> Optional[dict]:
+        async with Database.pool.acquire() as conn:
+            order = await conn.fetchrow('SELECT * FROM orders WHERE order_number = $1', order_number)
+            return dict(order) if order else None
+
+    @staticmethod
+    async def get_user_orders(user_id: int, limit: int = 10) -> List[dict]:
+        async with Database.pool.acquire() as conn:
+            orders = await conn.fetch('''
+                SELECT o.*, m.full_name as master_name
+                FROM orders o
+                LEFT JOIN masters m ON o.master_id = m.user_id
+                WHERE o.user_id = $1 
+                ORDER BY o.created_at DESC 
+                LIMIT $2
+            ''', user_id, limit)
+            return [dict(order) for order in orders]
+
+    @staticmethod
+    async def get_by_status(status: str = None, limit: int = 20) -> List[dict]:
+        async with Database.pool.acquire() as conn:
+            if status:
+                orders = await conn.fetch('''
+                    SELECT o.*, u.full_name as user_name, m.full_name as master_name
+                    FROM orders o
+                    LEFT JOIN users u ON o.user_id = u.user_id
+                    LEFT JOIN masters m ON o.master_id = m.user_id
+                    WHERE o.status = $1 
+                    ORDER BY o.created_at DESC 
+                    LIMIT $2
+                ''', status, limit)
+            else:
+                orders = await conn.fetch('''
+                    SELECT o.*, u.full_name as user_name, m.full_name as master_name
+                    FROM orders o
+                    LEFT JOIN users u ON o.user_id = u.user_id
+                    LEFT JOIN masters m ON o.master_id = m.user_id
+                    ORDER BY o.created_at DESC 
+                    LIMIT $2
+                ''', limit)
+            return [dict(order) for order in orders]
+
+    @staticmethod
+    async def update_status(order_number: str, status: str, changed_by: int = None):
+        async with Database.pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE orders 
+                SET status = $1, updated_at = NOW(),
+                    completed_at = CASE WHEN $1 = 'completed' THEN NOW() ELSE completed_at END
+                WHERE order_number = $2
+            ''', status, order_number)
+            
+            await conn.execute('''
+                INSERT INTO order_history (order_number, status, changed_by)
+                VALUES ($1, $2, $3)
+            ''', order_number, status, changed_by)
+
+    @staticmethod
+    async def assign_master(order_number: str, master_id: int):
+        async with Database.pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE orders 
+                SET master_id = $1, status = 'in_progress', updated_at = NOW()
+                WHERE order_number = $2
+            ''', master_id, order_number)
+            
+            await conn.execute('''
+                UPDATE masters 
+                SET is_busy = TRUE, total_orders = total_orders + 1
+                WHERE user_id = $1
+            ''', master_id)
+            
+            await conn.execute('''
+                INSERT INTO order_history (order_number, status, changed_by)
+                VALUES ($1, 'in_progress', $2)
+            ''', order_number, master_id)
+
+    @staticmethod
+    async def rate(order_number: str, rating: int, review: str = None):
+        async with Database.pool.acquire() as conn:
+            await conn.execute('''
+                UPDATE orders 
+                SET rating = $1, review = $2, updated_at = NOW()
+                WHERE order_number = $3
+            ''', rating, review, order_number)
+            
+            order = await conn.fetchrow('SELECT master_id FROM orders WHERE order_number = $1', order_number)
+            if order and order['master_id']:
+                avg_rating = await conn.fetchval('''
+                    SELECT AVG(rating) FROM orders 
+                    WHERE master_id = $1 AND rating > 0
+                ''', order['master_id'])
+                
+                if avg_rating:
+                    await conn.execute('''
+                        UPDATE masters SET rating = $1 WHERE user_id = $2
+                    ''', float(avg_rating), order['master_id'])
+
+
+class MasterDB:
+    @staticmethod
+    async def get_by_id(user_id: int) -> Optional[dict]:
+        async with Database.pool.acquire() as conn:
+            master = await conn.fetchrow('SELECT * FROM masters WHERE user_id = $1', user_id)
+            return dict(master) if master else None
+
+    @staticmethod
+    async def get_all() -> List[dict]:
+        async with Database.pool.acquire() as conn:
+            masters = await conn.fetch('''
+                SELECT m.*, COUNT(o.id) as active_orders
+                FROM masters m
+                LEFT JOIN orders o ON m.user_id = o.master_id AND o.status IN ('accepted', 'in_progress')
+                GROUP BY m.user_id
+                ORDER BY m.rating DESC
+            ''')
+            return [dict(master) for master in masters]
+
+    @staticmethod
+    async def toggle_online(user_id: int) -> bool:
+        async with Database.pool.acquire() as conn:
+            master = await conn.fetchrow('SELECT is_online FROM masters WHERE user_id = $1', user_id)
+            if not master:
+                return False
+            new_status = not master['is_online']
+            await conn.execute('UPDATE masters SET is_online = $1 WHERE user_id = $2', new_status, user_id)
+            return new_status
+
+    @staticmethod
+    async def toggle_busy(user_id: int) -> bool:
+        async with Database.pool.acquire() as conn:
+            master = await conn.fetchrow('SELECT is_busy FROM masters WHERE user_id = $1', user_id)
+            if not master:
+                return False
+            new_status = not master['is_busy']
+            await conn.execute('UPDATE masters SET is_busy = $1 WHERE user_id = $2', new_status, user_id)
+            return new_status
+
+    @staticmethod
+    async def add(user_id: int, full_name: str, phone: str = None):
+        async with Database.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO users (user_id, full_name, phone, role)
+                VALUES ($1, $2, $3, 'master')
+                ON CONFLICT (user_id) DO UPDATE
+                SET full_name = $2, phone = $3, role = 'master'
+            ''', user_id, full_name, phone)
+            
+            await conn.execute('''
+                INSERT INTO masters (user_id, full_name, phone)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (user_id) DO UPDATE
+                SET full_name = $2, phone = $3
+            ''', user_id, full_name, phone)
+
+    @staticmethod
+    async def remove(user_id: int):
+        async with Database.pool.acquire() as conn:
+            await conn.execute('DELETE FROM masters WHERE user_id = $1', user_id)
+            await conn.execute('UPDATE users SET role = "user" WHERE user_id = $1 AND role = "master"', user_id)
+
+
+class DispatcherDB:
+    @staticmethod
+    async def add(user_id: int, full_name: str):
+        async with Database.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO users (user_id, full_name, role)
+                VALUES ($1, $2, 'dispatcher')
+                ON CONFLICT (user_id) DO UPDATE
+                SET full_name = $2, role = 'dispatcher'
+            ''', user_id, full_name)
+            
+            await conn.execute('''
+                INSERT INTO dispatchers (user_id, full_name)
+                VALUES ($1, $2)
+                ON CONFLICT (user_id) DO UPDATE
+                SET full_name = $2
+            ''', user_id, full_name)
+
+    @staticmethod
+    async def remove(user_id: int):
+        async with Database.pool.acquire() as conn:
+            await conn.execute('DELETE FROM dispatchers WHERE user_id = $1', user_id)
+            await conn.execute('UPDATE users SET role = "user" WHERE user_id = $1 AND role = "dispatcher"', user_id)
 
 
 # ============================================================
@@ -409,292 +635,6 @@ class Keyboards:
 
 
 # ============================================================
-# DATABASE HELPERS
-# ============================================================
-
-class UserDB:
-    @staticmethod
-    async def get_or_create(user_id: int, username: str = None, full_name: str = None):
-        async with Database.pool.acquire() as conn:
-            user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
-            if not user:
-                await conn.execute('''
-                    INSERT INTO users (user_id, username, full_name)
-                    VALUES ($1, $2, $3)
-                ''', user_id, username, full_name)
-                user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
-            return dict(user)
-
-    @staticmethod
-    async def get_role(user_id: int) -> str:
-        if user_id == ADMIN_ID:
-            return 'admin'
-        
-        async with Database.pool.acquire() as conn:
-            master = await conn.fetchrow('SELECT user_id FROM masters WHERE user_id = $1', user_id)
-            if master:
-                return 'master'
-            
-            if DISPATCHER_ID and user_id == DISPATCHER_ID:
-                return 'dispatcher'
-            
-            dispatcher = await conn.fetchrow('SELECT user_id FROM dispatchers WHERE user_id = $1', user_id)
-            if dispatcher:
-                return 'dispatcher'
-            
-            return 'user'
-
-
-class OrderDB:
-    @staticmethod
-    async def create(user_id: int, service: str, address: str, phone: str, description: str = "") -> dict:
-        order_number = f"ORD-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
-        
-        async with Database.pool.acquire() as conn:
-            order_id = await conn.fetchval('''
-                INSERT INTO orders (order_number, user_id, service, address, phone, description)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                RETURNING id
-            ''', order_number, user_id, service, address, phone, description)
-            
-            order = await conn.fetchrow('SELECT * FROM orders WHERE id = $1', order_id)
-            
-            # Add history
-            await conn.execute('''
-                INSERT INTO order_history (order_number, status, changed_by)
-                VALUES ($1, $2, $3)
-            ''', order_number, 'new', user_id)
-            
-            return dict(order)
-
-    @staticmethod
-    async def get_by_number(order_number: str) -> Optional[dict]:
-        async with Database.pool.acquire() as conn:
-            order = await conn.fetchrow('SELECT * FROM orders WHERE order_number = $1', order_number)
-            return dict(order) if order else None
-
-    @staticmethod
-    async def get_user_orders(user_id: int, limit: int = 10) -> List[dict]:
-        async with Database.pool.acquire() as conn:
-            orders = await conn.fetch('''
-                SELECT o.*, m.full_name as master_name
-                FROM orders o
-                LEFT JOIN masters m ON o.master_id = m.user_id
-                WHERE o.user_id = $1 
-                ORDER BY o.created_at DESC 
-                LIMIT $2
-            ''', user_id, limit)
-            return [dict(order) for order in orders]
-
-    @staticmethod
-    async def get_master_orders(master_id: int, limit: int = 10) -> List[dict]:
-        async with Database.pool.acquire() as conn:
-            orders = await conn.fetch('''
-                SELECT o.*, u.full_name as user_name, u.phone as user_phone
-                FROM orders o
-                LEFT JOIN users u ON o.user_id = u.user_id
-                WHERE o.master_id = $1 
-                ORDER BY o.created_at DESC 
-                LIMIT $2
-            ''', master_id, limit)
-            return [dict(order) for order in orders]
-
-    @staticmethod
-    async def get_by_status(status: str = None, limit: int = 20) -> List[dict]:
-        async with Database.pool.acquire() as conn:
-            if status:
-                orders = await conn.fetch('''
-                    SELECT o.*, u.full_name as user_name, m.full_name as master_name
-                    FROM orders o
-                    LEFT JOIN users u ON o.user_id = u.user_id
-                    LEFT JOIN masters m ON o.master_id = m.user_id
-                    WHERE o.status = $1 
-                    ORDER BY o.created_at DESC 
-                    LIMIT $2
-                ''', status, limit)
-            else:
-                orders = await conn.fetch('''
-                    SELECT o.*, u.full_name as user_name, m.full_name as master_name
-                    FROM orders o
-                    LEFT JOIN users u ON o.user_id = u.user_id
-                    LEFT JOIN masters m ON o.master_id = m.user_id
-                    ORDER BY o.created_at DESC 
-                    LIMIT $2
-                ''', limit)
-            return [dict(order) for order in orders]
-
-    @staticmethod
-    async def update_status(order_number: str, status: str, changed_by: int = None):
-        async with Database.pool.acquire() as conn:
-            await conn.execute('''
-                UPDATE orders 
-                SET status = $1, updated_at = NOW(),
-                    completed_at = CASE WHEN $1 = 'completed' THEN NOW() ELSE completed_at END
-                WHERE order_number = $2
-            ''', status, order_number)
-            
-            await conn.execute('''
-                INSERT INTO order_history (order_number, status, changed_by)
-                VALUES ($1, $2, $3)
-            ''', order_number, status, changed_by)
-
-    @staticmethod
-    async def assign_master(order_number: str, master_id: int):
-        async with Database.pool.acquire() as conn:
-            await conn.execute('''
-                UPDATE orders 
-                SET master_id = $1, status = 'in_progress', updated_at = NOW()
-                WHERE order_number = $2
-            ''', master_id, order_number)
-            
-            await conn.execute('''
-                UPDATE masters 
-                SET is_busy = TRUE, total_orders = total_orders + 1
-                WHERE user_id = $1
-            ''', master_id)
-            
-            await conn.execute('''
-                INSERT INTO order_history (order_number, status, changed_by)
-                VALUES ($1, 'in_progress', $2)
-            ''', order_number, master_id)
-
-    @staticmethod
-    async def rate(order_number: str, rating: int, review: str = None):
-        async with Database.pool.acquire() as conn:
-            await conn.execute('''
-                UPDATE orders 
-                SET rating = $1, review = $2, updated_at = NOW()
-                WHERE order_number = $3
-            ''', rating, review, order_number)
-            
-            # Update master rating
-            order = await conn.fetchrow('SELECT master_id FROM orders WHERE order_number = $1', order_number)
-            if order and order['master_id']:
-                avg_rating = await conn.fetchval('''
-                    SELECT AVG(rating) FROM orders 
-                    WHERE master_id = $1 AND rating > 0
-                ''', order['master_id'])
-                
-                if avg_rating:
-                    await conn.execute('''
-                        UPDATE masters 
-                        SET rating = $1
-                        WHERE user_id = $2
-                    ''', float(avg_rating), order['master_id'])
-
-
-class MasterDB:
-    @staticmethod
-    async def get_by_id(user_id: int) -> Optional[dict]:
-        async with Database.pool.acquire() as conn:
-            master = await conn.fetchrow('SELECT * FROM masters WHERE user_id = $1', user_id)
-            return dict(master) if master else None
-
-    @staticmethod
-    async def get_all() -> List[dict]:
-        async with Database.pool.acquire() as conn:
-            masters = await conn.fetch('''
-                SELECT m.*, COUNT(o.id) as active_orders
-                FROM masters m
-                LEFT JOIN orders o ON m.user_id = o.master_id AND o.status IN ('accepted', 'in_progress')
-                GROUP BY m.user_id
-                ORDER BY m.rating DESC
-            ''')
-            return [dict(master) for master in masters]
-
-    @staticmethod
-    async def get_available() -> List[dict]:
-        async with Database.pool.acquire() as conn:
-            masters = await conn.fetch('''
-                SELECT m.*, COUNT(o.id) as active_orders
-                FROM masters m
-                LEFT JOIN orders o ON m.user_id = o.master_id AND o.status IN ('accepted', 'in_progress')
-                WHERE m.is_online = TRUE AND m.is_busy = FALSE
-                GROUP BY m.user_id
-                ORDER BY m.rating DESC
-            ''')
-            return [dict(master) for master in masters]
-
-    @staticmethod
-    async def toggle_online(user_id: int) -> bool:
-        async with Database.pool.acquire() as conn:
-            master = await conn.fetchrow('SELECT is_online FROM masters WHERE user_id = $1', user_id)
-            if not master:
-                return False
-            new_status = not master['is_online']
-            await conn.execute('''
-                UPDATE masters SET is_online = $1 WHERE user_id = $2
-            ''', new_status, user_id)
-            return new_status
-
-    @staticmethod
-    async def toggle_busy(user_id: int) -> bool:
-        async with Database.pool.acquire() as conn:
-            master = await conn.fetchrow('SELECT is_busy FROM masters WHERE user_id = $1', user_id)
-            if not master:
-                return False
-            new_status = not master['is_busy']
-            await conn.execute('''
-                UPDATE masters SET is_busy = $1 WHERE user_id = $2
-            ''', new_status, user_id)
-            return new_status
-
-    @staticmethod
-    async def add(user_id: int, full_name: str, phone: str = None):
-        async with Database.pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO users (user_id, full_name, phone, role)
-                VALUES ($1, $2, $3, 'master')
-                ON CONFLICT (user_id) DO UPDATE
-                SET full_name = $2, phone = $3, role = 'master'
-            ''', user_id, full_name, phone)
-            
-            await conn.execute('''
-                INSERT INTO masters (user_id, full_name, phone)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (user_id) DO UPDATE
-                SET full_name = $2, phone = $3
-            ''', user_id, full_name, phone)
-
-    @staticmethod
-    async def remove(user_id: int):
-        async with Database.pool.acquire() as conn:
-            await conn.execute('DELETE FROM masters WHERE user_id = $1', user_id)
-            await conn.execute('''
-                UPDATE users SET role = 'user' 
-                WHERE user_id = $1 AND role = 'master'
-            ''', user_id)
-
-
-class DispatcherDB:
-    @staticmethod
-    async def add(user_id: int, full_name: str):
-        async with Database.pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO users (user_id, full_name, role)
-                VALUES ($1, $2, 'dispatcher')
-                ON CONFLICT (user_id) DO UPDATE
-                SET full_name = $2, role = 'dispatcher'
-            ''', user_id, full_name)
-            
-            await conn.execute('''
-                INSERT INTO dispatchers (user_id, full_name)
-                VALUES ($1, $2)
-                ON CONFLICT (user_id) DO UPDATE
-                SET full_name = $2
-            ''', user_id, full_name)
-
-    @staticmethod
-    async def remove(user_id: int):
-        async with Database.pool.acquire() as conn:
-            await conn.execute('DELETE FROM dispatchers WHERE user_id = $1', user_id)
-            await conn.execute('''
-                UPDATE users SET role = 'user' 
-                WHERE user_id = $1 AND role = 'dispatcher'
-            ''', user_id)
-
-
-# ============================================================
 # MESSAGE HELPER
 # ============================================================
 
@@ -738,7 +678,7 @@ class MessageHelper:
 
 
 # ============================================================
-# BOT HANDLERS (qisqartirilgan, to'liq versiya)
+# BOT HANDLERS (to'liq)
 # ============================================================
 
 class BotHandlers:
@@ -752,7 +692,6 @@ class BotHandlers:
         self.app.add_handler(CommandHandler("help", self.help))
         self.app.add_handler(CommandHandler("back", self.back))
         self.app.add_handler(CommandHandler("stats", self.stats))
-        self.app.add_handler(CommandHandler("take", self.take_order_command))
         
         # Order conversation
         order_conv = ConversationHandler(
@@ -815,202 +754,85 @@ class BotHandlers:
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
-        user_id = user.id
+        await UserDB.get_or_create(user.id, user.username, user.full_name)
         
-        # Get or create user
-        await UserDB.get_or_create(user_id, user.username, user.full_name)
-        
-        # Get role
-        role = await UserDB.get_role(user_id)
+        role = await UserDB.get_role(user.id)
         context.user_data['role'] = role
         
-        text = f"""
-👋 Ассалому алейкум, {user.full_name}!
-
-📝 USTA24 буюртма тизимига хуш келибсиз.
-🎭 Ролингиз: {role}
-
-🔽 Менюдан танланг:
-"""
         await update.message.reply_text(
-            text,
+            f"👋 Ассалому алейкум, {user.full_name}!\n\n📝 USTA24 тизимига хуш келибсиз.\n🎭 Рол: {role}",
             reply_markup=Keyboards.main(role)
         )
 
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        text = """
-📚 **USTA24 Ёрдам**
-
-**🤵 Мижоз:**
-• 📝 Буюртма бериш
-• 📋 Буюртмаларни кузатиш
-• 👤 Профиль
-
-**👨‍🔧 Уста:**
-• 📋 Буюртма олиш
-• 🟢 Онлайн/Банд ҳолати
-• 📊 Статистика
-
-**📞 Диспетчер:**
-• 📋 Барча буюртмалар
-• 👨‍🔧 Усталарга юбориш
-• 📊 Статистика
-
-**👑 Админ:**
-• 👨‍🔧 Усталарни бошқариш
-• 👤 Диспетчерларни бошқариш
-• 📢 Хабар юбориш
-"""
-        await update.message.reply_text(text, parse_mode='Markdown')
+        await update.message.reply_text(
+            "📚 **Ёрдам**\n\n🤵 Мижоз: Буюртма бериш, кузатиш\n👨‍🔧 Уста: Буюртма олиш, ҳолат\n📞 Диспетчер: Бошқариш\n👑 Админ: Тўлиқ бошқарув",
+            parse_mode='Markdown'
+        )
 
     async def back(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         role = context.user_data.get('role', 'user')
-        await update.message.reply_text(
-            "🏠 Асосий меню",
-            reply_markup=Keyboards.main(role)
-        )
+        await update.message.reply_text("🏠 Асосий меню", reply_markup=Keyboards.main(role))
 
     async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with Database.pool.acquire() as conn:
             total = await conn.fetchval('SELECT COUNT(*) FROM orders')
             new = await conn.fetchval('SELECT COUNT(*) FROM orders WHERE status = $1', 'new')
-            in_progress = await conn.fetchval('SELECT COUNT(*) FROM orders WHERE status = $1', 'in_progress')
             completed = await conn.fetchval('SELECT COUNT(*) FROM orders WHERE status = $1', 'completed')
-            
             today = datetime.now().date()
-            today_orders = await conn.fetchval(
-                'SELECT COUNT(*) FROM orders WHERE created_at::date = $1',
-                today
-            )
-            
-            masters_count = await conn.fetchval('SELECT COUNT(*) FROM masters')
-            users_count = await conn.fetchval('SELECT COUNT(*) FROM users WHERE role = $1', 'user')
+            today_orders = await conn.fetchval('SELECT COUNT(*) FROM orders WHERE created_at::date = $1', today)
         
-        text = f"""
-📊 **Буюртма статистикаси**
-
-📋 Жами: {total}
-🆕 Янги: {new}
-🔵 Иш жараёнида: {in_progress}
-✅ Якунланган: {completed}
-
-👤 Мижозлар: {users_count}
-👨‍🔧 Усталар: {masters_count}
-
-📅 Бугун: {today_orders} та буюртма
-"""
-        await update.message.reply_text(text, parse_mode='Markdown')
-
-    async def take_order_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """/take_ORD-20240101-ABC123 command"""
-        # Extract order number from command
-        command = update.message.text
-        if not command.startswith('/take_'):
-            return
-        
-        order_number = command.replace('/take_', '').strip()
-        master_id = update.effective_user.id
-        
-        # Check if master exists
-        master = await MasterDB.get_by_id(master_id)
-        if not master:
-            await update.message.reply_text("❌ Сиз уста эмассиз!")
-            return
-        
-        if master['is_busy']:
-            await update.message.reply_text("❌ Сиз бандсиз!")
-            return
-        
-        if not master['is_online']:
-            await update.message.reply_text("❌ Сиз офлайнсиз!")
-            return
-        
-        # Assign order
-        await OrderDB.assign_master(order_number, master_id)
-        await update.message.reply_text(f"✅ Буюртма {order_number} сизга бириктирилди!")
-        
-        # Notify user
-        order = await OrderDB.get_by_number(order_number)
-        if order:
-            await update.message.bot.send_message(
-                order['user_id'],
-                f"👨‍🔧 Буюртмангиз {order_number} устага бириктирилди!\n📌 Ҳолат: Иш жараёнида"
-            )
+        await update.message.reply_text(
+            f"📊 **Статистика**\n\n📋 Жами: {total}\n🆕 Янги: {new}\n✅ Якунланган: {completed}\n📅 Бугун: {today_orders}",
+            parse_mode='Markdown'
+        )
 
     # ==================== ORDER ====================
     
     async def order_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['order_data'] = {}
-        await update.message.reply_text(
-            "🛠 **Хизмат турини киритинг:**\nМисол: Smartfon таъмирлаш",
-            parse_mode='Markdown',
-            reply_markup=Keyboards.cancel()
-        )
+        await update.message.reply_text("🛠 **Хизмат тури:**", parse_mode='Markdown', reply_markup=Keyboards.cancel())
         return 1
 
     async def order_service(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        text = update.message.text
-        if text == '🔙 Бекор қилиш':
+        if update.message.text == '🔙 Бекор қилиш':
             return await self.order_cancel(update, context)
-        
-        context.user_data['order_data']['service'] = text
-        await update.message.reply_text(
-            "📍 **Манзилингизни киритинг:**",
-            parse_mode='Markdown',
-            reply_markup=Keyboards.cancel()
-        )
+        context.user_data['order_data']['service'] = update.message.text
+        await update.message.reply_text("📍 **Манзил:**", parse_mode='Markdown')
         return 2
 
     async def order_address(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        text = update.message.text
-        if text == '🔙 Бекор қилиш':
+        if update.message.text == '🔙 Бекор қилиш':
             return await self.order_cancel(update, context)
-        
-        context.user_data['order_data']['address'] = text
-        await update.message.reply_text(
-            "📞 **Телефон рақамингизни киритинг:**",
-            parse_mode='Markdown',
-            reply_markup=Keyboards.cancel()
-        )
+        context.user_data['order_data']['address'] = update.message.text
+        await update.message.reply_text("📞 **Телефон:**", parse_mode='Markdown')
         return 3
 
     async def order_phone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        text = update.message.text
-        if text == '🔙 Бекор қилиш':
+        if update.message.text == '🔙 Бекор қилиш':
             return await self.order_cancel(update, context)
-        
-        context.user_data['order_data']['phone'] = text
-        await update.message.reply_text(
-            "📝 **Қўшимча маълумотлар:**\n(Ўтказиб юбориш мумкин)",
-            parse_mode='Markdown',
-            reply_markup=Keyboards.skip()
-        )
+        context.user_data['order_data']['phone'] = update.message.text
+        await update.message.reply_text("📝 **Изоҳ:** (Ўтказиб юбориш)", reply_markup=Keyboards.skip())
         return 4
 
     async def order_description(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        text = update.message.text
-        if text == '🔙 Бекор қилиш':
+        if update.message.text == '🔙 Бекор қилиш':
             return await self.order_cancel(update, context)
         
-        description = '' if text == '⏩ Ўтказиб юбориш' else text
+        description = '' if update.message.text == '⏩ Ўтказиб юбориш' else update.message.text
         data = context.user_data['order_data']
         
-        # Create order
         order = await OrderDB.create(
             update.effective_user.id,
-            data['service'],
-            data['address'],
-            data['phone'],
-            description
+            data['service'], data['address'], data['phone'], description
         )
         
-        # Notify user
         await update.message.reply_text(
-            f"✅ Буюртмангиз қабул қилинди!\n🆔 Рақами: {order['order_number']}",
+            f"✅ Буюртма қабул қилинди!\n🆔 {order['order_number']}",
             reply_markup=Keyboards.main(context.user_data.get('role', 'user'))
         )
         
-        # Notify dispatcher
+        # Notify dispatcher and masters
         order_info = MessageHelper.order_info(order)
         await update.message.bot.send_message(
             DISPATCHER_ID or ADMIN_ID,
@@ -1019,10 +841,9 @@ class BotHandlers:
             reply_markup=Keyboards.order_actions(order['order_number'])
         )
         
-        # Notify masters group
         await update.message.bot.send_message(
             MASTERS_GROUP_ID,
-            f"🆕 **Янги буюртма!**\n🆔 {order['order_number']}\n🛠 {order['service']}\n📍 {order['address']}\n\n✅ /take_{order['order_number']}",
+            f"🆕 **Янги буюртма!**\n🆔 {order['order_number']}\n🛠 {order['service']}\n📍 {order['address']}",
             parse_mode='Markdown',
             reply_markup=Keyboards.master_actions(order['order_number'])
         )
@@ -1031,48 +852,34 @@ class BotHandlers:
         return ConversationHandler.END
 
     async def order_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(
-            "❌ Буюртма бекор қилинди.",
-            reply_markup=Keyboards.main(context.user_data.get('role', 'user'))
-        )
+        await update.message.reply_text("❌ Бекор қилинди.", reply_markup=Keyboards.main(context.user_data.get('role', 'user')))
         context.user_data['order_data'] = {}
         return ConversationHandler.END
 
     # ==================== MY ORDERS ====================
     
     async def my_orders(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        orders = await OrderDB.get_user_orders(user_id)
-        
+        orders = await OrderDB.get_user_orders(update.effective_user.id)
         if not orders:
-            await update.message.reply_text("📭 Сизда буюртмалар йўқ.")
+            await update.message.reply_text("📭 Буюртмалар йўқ.")
             return
         
-        text = "📋 **Сизнинг буюртмаларингиз:**\n\n"
+        text = "📋 **Буюртмаларим**\n\n"
         for order in orders[:5]:
             text += f"{MessageHelper.order_short(order)}\n"
-        
-        if len(orders) > 5:
-            text += f"\n📊 Жами: {len(orders)} та буюртма"
-        
         await update.message.reply_text(text, parse_mode='Markdown')
 
     # ==================== MASTERS ====================
     
     async def masters_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         masters = await MasterDB.get_all()
-        
         if not masters:
-            await update.message.reply_text("👨‍🔧 Ҳозирча усталар мавжуд эмас.")
+            await update.message.reply_text("👨‍🔧 Усталар йўқ.")
             return
         
-        text = "👨‍🔧 **Усталар рўйхати:**\n\n"
-        for master in masters[:10]:
-            status = "🟢 Онлайн" if master['is_online'] else "🔴 Офлайн"
-            busy = "🔴 Банд" if master['is_busy'] else "🟢 Бўш"
-            text += f"👤 {master['full_name']}\n⭐ Рейтинг: {master['rating']:.1f}\n📌 {status} | {busy}\n"
-            text += "-" * 30 + "\n"
-        
+        text = "👨‍🔧 **Усталар**\n\n"
+        for m in masters[:10]:
+            text += f"👤 {m['full_name']}\n⭐ {m['rating']:.1f}\n🟢 {'Онлайн' if m['is_online'] else 'Офлайн'}\n---\n"
         await update.message.reply_text(text, parse_mode='Markdown')
 
     # ==================== PROFILE ====================
@@ -1080,259 +887,145 @@ class BotHandlers:
     async def profile(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         role = context.user_data.get('role', 'user')
-        
-        text = f"""
-👤 **Профиль**
-
-🆔 ID: `{user.id}`
-👤 Исм: {user.full_name}
-🎭 Рол: {role}
-"""
+        text = f"👤 **Профиль**\n\n🆔 {user.id}\n👤 {user.full_name}\n🎭 Рол: {role}"
         
         if role == 'master':
             master = await MasterDB.get_by_id(user.id)
             if master:
-                text += f"""
-👨‍🔧 **Уста маълумотлари**
-⭐ Рейтинг: {master['rating']:.1f}
-📊 Буюртмалар: {master['total_orders']}
-{'🟢 Онлайн' if master['is_online'] else '🔴 Офлайн'}
-{'🔴 Банд' if master['is_busy'] else '🟢 Бўш'}
-"""
+                text += f"\n\n⭐ Рейтинг: {master['rating']:.1f}\n📊 Буюртмалар: {master['total_orders']}"
         
         await update.message.reply_text(text, parse_mode='Markdown')
 
     # ==================== DISPATCHER PANEL ====================
     
     async def dispatcher_panel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        role = context.user_data.get('role', 'user')
-        if role not in ['dispatcher', 'admin']:
-            await update.message.reply_text("❌ Сизда ҳуқуқ йўқ!")
+        if context.user_data.get('role') not in ['dispatcher', 'admin']:
+            await update.message.reply_text("❌ Ҳуқуқ йўқ!")
             return
-        
-        await update.message.reply_text(
-            "📋 Диспетчер панели",
-            reply_markup=Keyboards.dispatcher()
-        )
+        await update.message.reply_text("📋 Диспетчер панели", reply_markup=Keyboards.dispatcher())
 
     async def show_orders(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        role = context.user_data.get('role', 'user')
-        if role not in ['dispatcher', 'admin']:
-            await update.message.reply_text("❌ Сизда ҳуқуқ йўқ!")
+        if context.user_data.get('role') not in ['dispatcher', 'admin']:
+            await update.message.reply_text("❌ Ҳуқуқ йўқ!")
             return
         
-        text = update.message.text
         status_map = {
             '📋 Барча буюртмалар': None,
             '🆕 Янги буюртмалар': 'new',
             '🟡 Қабул қилинганлар': 'accepted',
             '🔵 Ишдаги буюртмалар': 'in_progress',
             '✅ Якунланганлар': 'completed',
-            '❌ Бекор қилинганлар': 'cancelled'
         }
         
-        status = status_map.get(text)
+        status = status_map.get(update.message.text)
         orders = await OrderDB.get_by_status(status)
         
         if not orders:
-            await update.message.reply_text("📭 Буюртмалар топилмади.")
+            await update.message.reply_text("📭 Буюртмалар йўқ.")
             return
         
-        result = f"📋 **{text}**\n\n"
+        text = f"📋 **{update.message.text}**\n\n"
         for order in orders[:10]:
-            result += f"{MessageHelper.order_short(order)}\n"
-        
-        if len(orders) > 10:
-            result += f"\n📊 Жами: {len(orders)} та буюртма"
-        
-        await update.message.reply_text(result, parse_mode='Markdown')
+            text += f"{MessageHelper.order_short(order)}\n"
+        await update.message.reply_text(text, parse_mode='Markdown')
 
     # ==================== MASTER MODE ====================
     
     async def master_orders(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        orders = await OrderDB.get_master_orders(user_id)
-        
+        orders = await OrderDB.get_master_orders(update.effective_user.id)
         if not orders:
-            await update.message.reply_text("📭 Сизга буюртмалар бириктирилмаган.")
+            await update.message.reply_text("📭 Буюртмалар йўқ.")
             return
         
-        text = "📋 **Менинг буюртмаларим:**\n\n"
+        text = "📋 **Менинг буюртмаларим**\n\n"
         for order in orders[:5]:
             text += f"{MessageHelper.order_short(order)}\n"
-        
-        if len(orders) > 5:
-            text += f"\n📊 Жами: {len(orders)} та буюртма"
-        
         await update.message.reply_text(text, parse_mode='Markdown')
 
     async def master_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        master = await MasterDB.get_by_id(user_id)
-        
+        master = await MasterDB.get_by_id(update.effective_user.id)
         if not master:
-            await update.message.reply_text("❌ Сиз уста эмассиз!")
+            await update.message.reply_text("❌ Уста эмассиз!")
             return
         
-        async with Database.pool.acquire() as conn:
-            completed = await conn.fetchval(
-                'SELECT COUNT(*) FROM orders WHERE master_id = $1 AND status = $2',
-                user_id, 'completed'
-            )
-            active = await conn.fetchval(
-                'SELECT COUNT(*) FROM orders WHERE master_id = $1 AND status IN ($2, $3)',
-                user_id, 'accepted', 'in_progress'
-            )
-        
-        text = f"""
-📊 **Менинг статистикам**
-
-👤 Уста: {master['full_name']}
-⭐ Рейтинг: {master['rating']:.1f}
-📊 Жами: {master['total_orders']}
-✅ Якунланган: {completed}
-🔵 Фаол: {active}
-🟢 {'Онлайн' if master['is_online'] else 'Офлайн'}
-{'🔴 Банд' if master['is_busy'] else '🟢 Бўш'}
-"""
-        await update.message.reply_text(text, parse_mode='Markdown')
+        await update.message.reply_text(
+            f"📊 **Менинг статистикам**\n\n⭐ Рейтинг: {master['rating']:.1f}\n📊 Жами: {master['total_orders']}\n🟢 {'Онлайн' if master['is_online'] else 'Офлайн'}",
+            parse_mode='Markdown'
+        )
 
     async def toggle_online(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        new_status = await MasterDB.toggle_online(user_id)
-        
-        status = "🟢 Онлайн" if new_status else "🔴 Офлайн"
-        await update.message.reply_text(f"✅ Ҳолат: {status}")
+        status = await MasterDB.toggle_online(update.effective_user.id)
+        await update.message.reply_text(f"✅ {'🟢 Онлайн' if status else '🔴 Офлайн'}")
 
     async def toggle_busy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        new_status = await MasterDB.toggle_busy(user_id)
-        
-        status = "🔴 Банд" if new_status else "🟢 Бўш"
-        await update.message.reply_text(f"✅ Ҳолат: {status}")
+        status = await MasterDB.toggle_busy(update.effective_user.id)
+        await update.message.reply_text(f"✅ {'🔴 Банд' if status else '🟢 Бўш'}")
 
     # ==================== ADMIN PANEL ====================
     
     async def admin_panel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id != ADMIN_ID:
-            await update.message.reply_text("❌ Сизда ҳуқуқ йўқ!")
+        if update.effective_user.id != ADMIN_ID:
+            await update.message.reply_text("❌ Ҳуқуқ йўқ!")
             return
-        
-        await update.message.reply_text(
-            "👑 Админ панели",
-            reply_markup=Keyboards.admin()
-        )
+        await update.message.reply_text("👑 Админ панели", reply_markup=Keyboards.admin())
 
     async def admin_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id != ADMIN_ID:
-            await update.message.reply_text("❌ Сизда ҳуқуқ йўқ!")
+        if update.effective_user.id != ADMIN_ID:
+            await update.message.reply_text("❌ Ҳуқуқ йўқ!")
             return
         
         async with Database.pool.acquire() as conn:
-            total_users = await conn.fetchval('SELECT COUNT(*) FROM users')
-            total_masters = await conn.fetchval('SELECT COUNT(*) FROM masters')
-            total_dispatchers = await conn.fetchval('SELECT COUNT(*) FROM dispatchers')
-            total_orders = await conn.fetchval('SELECT COUNT(*) FROM orders')
-            completed_orders = await conn.fetchval('SELECT COUNT(*) FROM orders WHERE status = $1', 'completed')
-            
-            today = datetime.now().date()
-            today_orders = await conn.fetchval(
-                'SELECT COUNT(*) FROM orders WHERE created_at::date = $1',
-                today
-            )
-            
-            avg_rating = await conn.fetchval(
-                'SELECT AVG(rating) FROM orders WHERE rating > 0'
-            )
-        
-        text = f"""
-👑 **Умумий статистика**
-
-👤 Фойдаланувчилар: {total_users}
-👨‍🔧 Усталар: {total_masters}
-📞 Диспетчерлар: {total_dispatchers}
-
-📋 Буюртмалар: {total_orders}
-✅ Якунланган: {completed_orders}
-📅 Бугун: {today_orders}
-
-⭐ Ўртача рейтинг: {avg_rating or 0:.1f}
-"""
-        await update.message.reply_text(text, parse_mode='Markdown')
-
-    async def add_master(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id != ADMIN_ID:
-            await update.message.reply_text("❌ Сизда ҳуқуқ йўқ!")
-            return
+            users = await conn.fetchval('SELECT COUNT(*) FROM users')
+            masters = await conn.fetchval('SELECT COUNT(*) FROM masters')
+            orders = await conn.fetchval('SELECT COUNT(*) FROM orders')
+            completed = await conn.fetchval('SELECT COUNT(*) FROM orders WHERE status = $1', 'completed')
         
         await update.message.reply_text(
-            "👨‍🔧 **Уста қўшиш**\n\nID ва исм киритинг:\nМисол: `123456789 Алишер`",
+            f"👑 **Умумий**\n\n👤 Фойдаланувчилар: {users}\n👨‍🔧 Усталар: {masters}\n📋 Буюртмалар: {orders}\n✅ Якунланган: {completed}",
             parse_mode='Markdown'
         )
+
+    async def add_master(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id != ADMIN_ID:
+            await update.message.reply_text("❌ Ҳуқуқ йўқ!")
+            return
+        await update.message.reply_text("👨‍🔧 **Уста қўшиш**\nID ва исм: `123456789 Алишер`", parse_mode='Markdown')
         context.user_data['admin_action'] = 'add_master'
 
     async def remove_master(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id != ADMIN_ID:
-            await update.message.reply_text("❌ Сизда ҳуқуқ йўқ!")
+        if update.effective_user.id != ADMIN_ID:
+            await update.message.reply_text("❌ Ҳуқуқ йўқ!")
             return
-        
-        await update.message.reply_text(
-            "👨‍🔧 **Уста ўчириш**\n\nID ни киритинг:\nМисол: `123456789`",
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text("👨‍🔧 **Уста ўчириш**\nID: `123456789`", parse_mode='Markdown')
         context.user_data['admin_action'] = 'remove_master'
 
     async def add_dispatcher(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id != ADMIN_ID:
-            await update.message.reply_text("❌ Сизда ҳуқуқ йўқ!")
+        if update.effective_user.id != ADMIN_ID:
+            await update.message.reply_text("❌ Ҳуқуқ йўқ!")
             return
-        
-        await update.message.reply_text(
-            "👤 **Диспетчер қўшиш**\n\nID ва исм киритинг:\nМисол: `987654321 Дилафрўз`",
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text("👤 **Диспетчер қўшиш**\nID ва исм: `987654321 Дилафрўз`", parse_mode='Markdown')
         context.user_data['admin_action'] = 'add_dispatcher'
 
     async def remove_dispatcher(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id != ADMIN_ID:
-            await update.message.reply_text("❌ Сизда ҳуқуқ йўқ!")
+        if update.effective_user.id != ADMIN_ID:
+            await update.message.reply_text("❌ Ҳуқуқ йўқ!")
             return
-        
-        await update.message.reply_text(
-            "👤 **Диспетчер ўчириш**\n\nID ни киритинг:\nМисол: `987654321`",
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text("👤 **Диспетчер ўчириш**\nID: `987654321`", parse_mode='Markdown')
         context.user_data['admin_action'] = 'remove_dispatcher'
 
     # ==================== BROADCAST ====================
     
     async def broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        role = context.user_data.get('role', 'user')
-        
-        if role not in ['dispatcher', 'admin']:
-            await update.message.reply_text("❌ Сизда ҳуқуқ йўқ!")
+        if context.user_data.get('role') not in ['dispatcher', 'admin']:
+            await update.message.reply_text("❌ Ҳуқуқ йўқ!")
             return
-        
-        await update.message.reply_text(
-            "📢 **Хабар юбориш**\n\nХабарингизни киритинг:",
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text("📢 **Хабар юбориш**\nХабарни киритинг:")
         context.user_data['broadcast'] = True
 
     # ==================== CONTACT ====================
     
     async def contact_dispatcher(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(
-            "📞 **Диспетчер билан боғланиш**\n\nСавол ёзинг:",
-            reply_markup=Keyboards.cancel()
-        )
+        await update.message.reply_text("📞 **Диспетчерга ёзинг**", reply_markup=Keyboards.cancel())
         context.user_data['contact_dispatcher'] = True
 
     # ==================== CALLBACKS ====================
@@ -1348,199 +1041,149 @@ class BotHandlers:
         
         if action == 'accept':
             await OrderDB.update_status(order_number, 'accepted', query.from_user.id)
-            await query.edit_message_text(f"✅ Буюртма {order_number} қабул қилинди!")
-            
+            await query.edit_message_text(f"✅ {order_number} қабул қилинди!")
             order = await OrderDB.get_by_number(order_number)
             if order:
-                await query.message.bot.send_message(
-                    order['user_id'],
-                    f"✅ Буюртмангиз {order_number} қабул қилинди!"
-                )
+                await query.message.bot.send_message(order['user_id'], f"✅ Буюртмангиз {order_number} қабул қилинди!")
         
         elif action == 'reject':
             await OrderDB.update_status(order_number, 'rejected', query.from_user.id)
-            await query.edit_message_text(f"🚫 Буюртма {order_number} рад этилди!")
-            
+            await query.edit_message_text(f"🚫 {order_number} рад этилди!")
             order = await OrderDB.get_by_number(order_number)
             if order:
-                await query.message.bot.send_message(
-                    order['user_id'],
-                    f"🚫 Буюртмангиз {order_number} рад этилди."
-                )
+                await query.message.bot.send_message(order['user_id'], f"🚫 Буюртмангиз {order_number} рад этилди.")
         
         elif action == 'take':
-            master_id = query.from_user.id
-            master = await MasterDB.get_by_id(master_id)
-            
-            if not master:
-                await query.edit_message_text("❌ Сиз уста эмассиз!")
+            master = await MasterDB.get_by_id(query.from_user.id)
+            if not master or master['is_busy'] or not master['is_online']:
+                await query.edit_message_text("❌ Банд ёки офлайн!")
                 return
             
-            if master['is_busy']:
-                await query.edit_message_text("❌ Сиз бандсиз!")
-                return
-            
-            if not master['is_online']:
-                await query.edit_message_text("❌ Сиз офлайнсиз!")
-                return
-            
-            await OrderDB.assign_master(order_number, master_id)
-            await query.edit_message_text(f"✅ Буюртма {order_number} сизга бириктирилди!")
-            
+            await OrderDB.assign_master(order_number, query.from_user.id)
+            await query.edit_message_text(f"✅ {order_number} сизга бириктирилди!")
             order = await OrderDB.get_by_number(order_number)
             if order:
-                await query.message.bot.send_message(
-                    order['user_id'],
-                    f"👨‍🔧 Буюртмангиз {order_number} устага бириктирилди!"
-                )
+                await query.message.bot.send_message(order['user_id'], f"👨‍🔧 Буюртмангиз {order_number} устага бириктирилди!")
         
         elif action == 'complete':
             await OrderDB.update_status(order_number, 'completed', query.from_user.id)
-            await query.edit_message_text(f"✅ Буюртма {order_number} якунланди!")
-            
+            await query.edit_message_text(f"✅ {order_number} якунланди!")
             order = await OrderDB.get_by_number(order_number)
             if order and order['master_id']:
                 await MasterDB.toggle_busy(order['master_id'])
-                
                 await query.message.bot.send_message(
                     order['user_id'],
-                    f"✅ Буюртмангиз {order_number} якунланди!\n\n⭐ Баҳолаш:",
+                    f"✅ Буюртмангиз {order_number} якунланди!\n⭐ Баҳолаш:",
                     reply_markup=Keyboards.rate_actions(order_number)
                 )
         
         elif action == 'rate':
             rating = int(parts[2])
             await OrderDB.rate(order_number, rating)
-            await query.edit_message_text(f"⭐ Баҳоланди! Рейтинг: {rating}")
+            await query.edit_message_text(f"⭐ Баҳоланди! {rating}")
         
         elif action == 'call':
             order = await OrderDB.get_by_number(order_number)
             if order:
-                await query.edit_message_text(
-                    f"📞 Мижоз телефони: {order['phone']}\n📍 Манзил: {order['address']}"
-                )
+                await query.edit_message_text(f"📞 Телефон: {order['phone']}\n📍 Манзил: {order['address']}")
 
     # ==================== UNKNOWN ====================
     
     async def unknown(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # Check for admin actions
+        # Admin actions
         if context.user_data.get('admin_action'):
-            await self.handle_admin_input(update, context)
-            return
-        
-        if context.user_data.get('broadcast'):
-            await self.handle_broadcast_input(update, context)
-            return
-        
-        if context.user_data.get('contact_dispatcher'):
-            await self.handle_contact_input(update, context)
-            return
-        
-        await update.message.reply_text(
-            "❌ Тушунарсиз команда.\n/start босинг."
-        )
-
-    async def handle_admin_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        action = context.user_data['admin_action']
-        text = update.message.text.strip()
-        parts = text.split()
-        
-        try:
-            target_id = int(parts[0])
-        except ValueError:
-            await update.message.reply_text("❌ ID сон бўлиши керак!")
-            return
-        
-        if action == 'add_master':
-            full_name = ' '.join(parts[1:])
-            if not full_name:
-                await update.message.reply_text("❌ Исм киритинг!")
+            action = context.user_data['admin_action']
+            parts = update.message.text.strip().split()
+            
+            if len(parts) < 1:
+                await update.message.reply_text("❌ ID киритинг!")
                 return
-            await MasterDB.add(target_id, full_name)
-            await update.message.reply_text(f"✅ Уста қўшилди: {full_name}")
-        
-        elif action == 'remove_master':
-            await MasterDB.remove(target_id)
-            await update.message.reply_text(f"✅ Уста ўчирилди: {target_id}")
-        
-        elif action == 'add_dispatcher':
-            full_name = ' '.join(parts[1:])
-            if not full_name:
-                await update.message.reply_text("❌ Исм киритинг!")
-                return
-            await DispatcherDB.add(target_id, full_name)
-            await update.message.reply_text(f"✅ Диспетчер қўшилди: {full_name}")
-        
-        elif action == 'remove_dispatcher':
-            await DispatcherDB.remove(target_id)
-            await update.message.reply_text(f"✅ Диспетчер ўчирилди: {target_id}")
-        
-        context.user_data['admin_action'] = None
-
-    async def handle_broadcast_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        text = update.message.text
-        
-        async with Database.pool.acquire() as conn:
-            users = await conn.fetch('SELECT user_id FROM users')
-        
-        sent = 0
-        for user in users:
+            
             try:
-                await update.message.bot.send_message(user['user_id'], text)
-                sent += 1
-                await asyncio.sleep(0.05)
-            except Exception as e:
-                logger.error(f"Failed: {e}")
+                target_id = int(parts[0])
+            except ValueError:
+                await update.message.reply_text("❌ ID сон бўлиши керак!")
+                return
+            
+            if action == 'add_master':
+                if len(parts) < 2:
+                    await update.message.reply_text("❌ Исм киритинг!")
+                    return
+                await MasterDB.add(target_id, ' '.join(parts[1:]))
+                await update.message.reply_text(f"✅ Уста қўшилди!")
+            
+            elif action == 'remove_master':
+                await MasterDB.remove(target_id)
+                await update.message.reply_text(f"✅ Уста ўчирилди!")
+            
+            elif action == 'add_dispatcher':
+                if len(parts) < 2:
+                    await update.message.reply_text("❌ Исм киритинг!")
+                    return
+                await DispatcherDB.add(target_id, ' '.join(parts[1:]))
+                await update.message.reply_text(f"✅ Диспетчер қўшилди!")
+            
+            elif action == 'remove_dispatcher':
+                await DispatcherDB.remove(target_id)
+                await update.message.reply_text(f"✅ Диспетчер ўчирилди!")
+            
+            context.user_data['admin_action'] = None
+            return
         
-        await update.message.reply_text(
-            f"✅ Хабар юборилди!\n📊 {sent} та фойдаланувчига"
-        )
-        context.user_data['broadcast'] = False
-
-    async def handle_contact_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        text = update.message.text
-        msg = f"📞 **Мижоздан хабар**\n\n{text}"
+        # Broadcast
+        if context.user_data.get('broadcast'):
+            text = update.message.text
+            async with Database.pool.acquire() as conn:
+                users = await conn.fetch('SELECT user_id FROM users')
+            
+            sent = 0
+            for user in users:
+                try:
+                    await update.message.bot.send_message(user['user_id'], text)
+                    sent += 1
+                    await asyncio.sleep(0.05)
+                except:
+                    pass
+            
+            await update.message.reply_text(f"✅ {sent} та фойдаланувчига юборилди!")
+            context.user_data['broadcast'] = False
+            return
         
-        target = DISPATCHER_ID or ADMIN_ID
-        await update.message.bot.send_message(target, msg, parse_mode='Markdown')
-        await update.message.reply_text(
-            "✅ Хабарингиз юборилди!",
-            reply_markup=Keyboards.main(context.user_data.get('role', 'user'))
-        )
-        context.user_data['contact_dispatcher'] = False
+        # Contact dispatcher
+        if context.user_data.get('contact_dispatcher'):
+            target = DISPATCHER_ID or ADMIN_ID
+            await update.message.bot.send_message(
+                target,
+                f"📞 **Мижоздан хабар**\n\n{update.message.text}",
+                parse_mode='Markdown'
+            )
+            await update.message.reply_text("✅ Юборилди!", reply_markup=Keyboards.main(context.user_data.get('role', 'user')))
+            context.user_data['contact_dispatcher'] = False
+            return
+        
+        await update.message.reply_text("❌ Тушунарсиз. /start босинг.")
 
     # ==================== MASTERS STATS ====================
     
     async def masters_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        role = context.user_data.get('role', 'user')
-        if role not in ['dispatcher', 'admin']:
-            await update.message.reply_text("❌ Сизда ҳуқуқ йўқ!")
+        if context.user_data.get('role') not in ['dispatcher', 'admin']:
+            await update.message.reply_text("❌ Ҳуқуқ йўқ!")
             return
         
         masters = await MasterDB.get_all()
-        
         if not masters:
-            await update.message.reply_text("👨‍🔧 Усталар мавжуд эмас.")
+            await update.message.reply_text("👨‍🔧 Усталар йўқ.")
             return
         
         text = "👨‍🔧 **Усталар статистикаси**\n\n"
-        for master in masters:
-            text += f"👤 {master['full_name']}\n"
-            text += f"⭐ Рейтинг: {master['rating']:.1f}\n"
-            text += f"📊 Буюртмалар: {master['total_orders']}\n"
-            text += f"🟢 {'Онлайн' if master['is_online'] else 'Офлайн'}\n"
-            text += "-" * 30 + "\n"
-        
+        for m in masters:
+            text += f"👤 {m['full_name']}\n⭐ {m['rating']:.1f}\n📊 {m['total_orders']}\n---\n"
         await update.message.reply_text(text, parse_mode='Markdown')
 
-    # ==================== ERROR HANDLER ====================
+    # ==================== ERROR ====================
     
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.error(f"Хатолик: {context.error}")
-        try:
-            await update.message.reply_text("❌ Техник хатолик!")
-        except:
-            pass
+        logger.error(f"Error: {context.error}")
 
 
 # ============================================================
@@ -1550,46 +1193,36 @@ class BotHandlers:
 async def main():
     global _application
     
-    # Initialize database
     await Database.init()
     
-    # Create bot application
     application = Application.builder().token(TOKEN).build()
     _application = application
     
-    # Setup handlers
     BotHandlers(application)
     
-    # Start bot
     await application.initialize()
     await application.start()
     
-    # Webhook or Polling
+    # WEBHOOK or POLLING
     if WEBHOOK_URL:
-        # Webhook mode
         webhook_url = f"{WEBHOOK_URL}/{TOKEN}"
         await application.bot.set_webhook(webhook_url)
-        logger.info(f"✅ Webhook set: {webhook_url}")
-        logger.info(f"📊 Webhook info: {await application.bot.get_webhook_info()}")
+        logger.info(f"✅ Webhook: {webhook_url}")
         
-        # Start Flask (for webhook)
         def run_flask():
             flask_app.run(host="0.0.0.0", port=PORT, debug=False)
-        
         Thread(target=run_flask, daemon=True).start()
-        logger.info(f"🚀 Flask server started on port {PORT}")
+        logger.info(f"🚀 Flask: {PORT}")
     else:
-        # Polling mode
         await application.updater.start_polling()
-        logger.info("🚀 Bot started in polling mode")
+        logger.info("🚀 Polling rejimida ishga tushdi")
     
     logger.info("✅ BOT ISHGA TUSHDI!")
     
-    # Keep running
     try:
         await asyncio.Event().wait()
     except KeyboardInterrupt:
-        logger.info("🛑 Bot to'xtatilmoqda...")
+        logger.info("🛑 To'xtatilmoqda...")
     finally:
         await Database.close()
         await application.shutdown()
