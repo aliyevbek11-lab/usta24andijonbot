@@ -1427,7 +1427,7 @@ async def order_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Iltimos, ustani baholang:",
                     reply_markup=keyboard
                 )
-            )
+            
         except Exception:
             pass
         
