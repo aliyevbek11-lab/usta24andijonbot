@@ -1,3680 +1,2265 @@
-# ============================================================
-# USTA 24 ANDIJON
-# FULL MAIN.PY
-#
-# Python 3.11+
-# python-telegram-bot==22.3
-# asyncpg
-# PostgreSQL
-#
-# OTP YO'Q
-# SMS YO'Q
-#
-# CLIENT
-# MASTER
-# DISPATCHER
-# ADMIN
-#
-# ============================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-import os
-import io
-import csv
+"""
+📱 USTA 24 ANDIJON - To'liq Telegram Bot
+🤖 1 Bot = 3 Rol (Mijoz + Usta + Admin)
+📞 Dispetcher: +9987706900003
+🚨 24/7 Shosilinch rejim
+"""
+
 import asyncio
 import logging
+import sqlite3
+import json
+import os
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
-import asyncpg
-
-from telegram import (
-    Update,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    ReplyKeyboardRemove,
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
+    FSInputFile, InputMediaPhoto
 )
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.exceptions import TelegramBadRequest
 
-from telegram.constants import ParseMode
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    ConversationHandler,
-    filters,
-)
+# ======================== KONFIGURATSIYA ========================
 
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # O'z tokeningizni qo'ying
+ADMIN_IDS = [123456789, 987654321]  # Admin Telegram ID'lari
+DISPETCHER_PHONE = "+9987706900003"
+GROUP_ID = -1001234567890  # Guruh ID'si (manfiy son)
+CHANNEL_ID = -1001234567891  # Kanal ID'si (ixtiyoriy)
 
-# ============================================================
-# CONFIG
-# ============================================================
-
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
-DISPATCHER_ID = int(os.getenv("DISPATCHER_ID", "0") or 0)
-MASTERS_GROUP_ID = int(os.getenv("MASTERS_GROUP_ID", "0") or 0)
-
-TZ_NAME = "Asia/Tashkent"
+# ======================== LOGING ========================
 
 logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 )
+logger = logging.getLogger(__name__)
 
-logger = logging.getLogger("usta24")
+# ======================== DATABASE ========================
 
-db_pool: Optional[asyncpg.Pool] = None
+class Database:
+    def __init__(self, db_path="usta24.db"):
+        self.db_path = db_path
+        self.init_db()
 
+    def init_db(self):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
 
-# ============================================================
-# CONSTANTS
-# ============================================================
-
-ROLE_CLIENT = "client"
-ROLE_MASTER = "master"
-ROLE_ADMIN = "admin"
-ROLE_DISPATCHER = "dispatcher"
-
-STATUS_WAITING = "waiting"
-STATUS_OFFERED = "offered"
-STATUS_ACCEPTED = "accepted"
-STATUS_ON_WAY = "on_way"
-STATUS_STARTED = "started"
-STATUS_COMPLETED = "completed"
-STATUS_CANCELLED = "cancelled"
-STATUS_REJECTED = "rejected"
-
-# Client conversation states
-C_NAME = 100
-C_PHONE = 101
-C_SERVICE = 102
-C_LOCATION = 103
-C_ADDRESS = 104
-C_DESCRIPTION = 105
-C_TIME = 106
-C_COUPON = 107
-C_CONFIRM = 108
-C_CHAT = 109
-C_RATING = 110
-C_REVIEW = 111
-
-# Master states
-M_ARRIVAL = 200
-M_CHAT = 201
-
-# Admin states
-A_BROADCAST = 300
-A_PRICE = 301
-
-
-# ============================================================
-# SERVICES
-# ============================================================
-
-SERVICES = {
-    "sanitary": {
-        "name": "🚽 Sanitariya",
-        "items": {
-            "toilet": ("🚽 Hojatxona o'rnatish", 80000),
-            "sink": ("🚰 Rakovina o'rnatish", 70000),
-            "faucet": ("🚿 Kranni almashtirish", 50000),
-            "pipe": ("🔧 Quvur ta'mirlash", 80000),
-        },
-    },
-    "furniture": {
-        "name": "🪑 Mebel",
-        "items": {
-            "assemble": ("🪑 Mebel yig'ish", 80000),
-            "wardrobe": ("🚪 Shkaf yig'ish", 120000),
-            "kitchen": ("🍽 Oshxona mebeli", 150000),
-            "bed": ("🛏 Karavot yig'ish", 100000),
-            "table": ("🪵 Stol/stul yig'ish", 60000),
-            "disassemble": ("🔧 Mebel yechish", 70000),
-        },
-    },
-    "moving": {
-        "name": "🚚 Ko'chirish",
-        "items": {
-            "house": ("🏠 Uy ko'chirish", 250000),
-            "furniture_transport": ("🚚 Mebel tashish", 150000),
-            "loading": ("📦 Yuklash/tushirish", 100000),
-        },
-    },
-    "electric": {
-        "name": "💡 Elektr",
-        "items": {
-            "socket": ("🔌 Rozetka o'rnatish", 50000),
-            "light": ("💡 Chiroq o'rnatish", 50000),
-            "wiring": ("⚡ Elektr simlari", 100000),
-        },
-    },
-}
-
-
-# ============================================================
-# KEYBOARDS
-# ============================================================
-
-def main_menu():
-    return ReplyKeyboardMarkup(
-        [
-            ["🛠 Buyurtma berish", "📋 Xizmatlar"],
-            ["🔍 Buyurtmalarim", "🔄 Qayta buyurtma"],
-            ["⭐ Reytinglarim", "🎁 Bonuslarim"],
-            ["📞 Aloqa", "👤 Profil"],
-        ],
-        resize_keyboard=True,
-    )
-
-
-def master_menu():
-    return ReplyKeyboardMarkup(
-        [
-            ["📋 Yangi buyurtmalar"],
-            ["🔧 Faol buyurtmalar", "📜 Tarix"],
-            ["🟢 Online", "🔴 Offline"],
-            ["💰 Daromadim", "⭐ Reytingim"],
-            ["👤 Profil"],
-        ],
-        resize_keyboard=True,
-    )
-
-
-def admin_menu():
-    return ReplyKeyboardMarkup(
-        [
-            ["👨‍🔧 Ustalar", "📋 Buyurtmalar"],
-            ["👥 Mijozlar", "📊 Statistika"],
-            ["📄 Hisobot", "💰 Narxlar"],
-            ["💬 Xabarlar", "🎟 Kuponlar"],
-            ["⚙️ Sozlamalar"],
-        ],
-        resize_keyboard=True,
-    )
-
-
-def phone_keyboard():
-    return ReplyKeyboardMarkup(
-        [
-            [
-                KeyboardButton(
-                    "📞 Telefon raqamimni yuborish",
-                    request_contact=True,
-                )
-            ],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-
-
-def location_keyboard():
-    return ReplyKeyboardMarkup(
-        [
-            [
-                KeyboardButton(
-                    "📍 Geolokatsiyani yuborish",
-                    request_location=True,
-                )
-            ],
-            ["✍️ Manzilni qo'lda yozish"],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-
-
-# ============================================================
-# DATABASE
-# ============================================================
-
-async def init_db():
-    global db_pool
-
-    if not DATABASE_URL:
-        raise RuntimeError(
-            "DATABASE_URL environment variable topilmadi."
-        )
-
-    db_pool = await asyncpg.create_pool(
-        DATABASE_URL,
-        min_size=1,
-        max_size=10,
-        command_timeout=60,
-    )
-
-    async with db_pool.acquire() as conn:
-
-        await conn.execute("""
+        # Foydalanuvchilar
+        c.execute('''
             CREATE TABLE IF NOT EXISTS users (
-                id BIGSERIAL PRIMARY KEY,
-                telegram_id BIGINT UNIQUE NOT NULL,
-                username TEXT,
+                user_id INTEGER PRIMARY KEY,
                 full_name TEXT,
                 phone TEXT,
-                role TEXT NOT NULL DEFAULT 'client',
-                language TEXT DEFAULT 'uz',
-                is_active BOOLEAN DEFAULT TRUE,
-                is_online BOOLEAN DEFAULT FALSE,
-                rating NUMERIC(3,2) DEFAULT 5.00,
-                rating_count INTEGER DEFAULT 0,
-                bonus_points INTEGER DEFAULT 0,
-                completed_orders INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT NOW(),
-                updated_at TIMESTAMP DEFAULT NOW()
+                role TEXT DEFAULT 'mijoz',
+                lang TEXT DEFAULT 'uz',
+                username TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """)
+        ''')
 
-        await conn.execute("""
+        # Buyurtmalar
+        c.execute('''
             CREATE TABLE IF NOT EXISTS orders (
-                id BIGSERIAL PRIMARY KEY,
-
-                customer_id BIGINT NOT NULL,
-                customer_name TEXT,
-                customer_phone TEXT,
-
-                service_category TEXT,
-                service_code TEXT,
-                service_name TEXT,
-
-                address TEXT,
-                latitude DOUBLE PRECISION,
-                longitude DOUBLE PRECISION,
-
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_num TEXT UNIQUE,
+                user_id INTEGER,
+                service TEXT,
+                sub_service TEXT,
                 description TEXT,
-
-                requested_time TEXT DEFAULT 'now',
-
-                base_price NUMERIC(12,2) DEFAULT 0,
-                discount NUMERIC(12,2) DEFAULT 0,
-                total_price NUMERIC(12,2) DEFAULT 0,
-
-                coupon_code TEXT,
-
-                status TEXT DEFAULT 'waiting',
-
-                master_id BIGINT,
-                master_name TEXT,
-                master_phone TEXT,
-
-                arrival_minutes INTEGER,
-
+                address TEXT,
+                latitude REAL,
+                longitude REAL,
+                time_slot TEXT,
+                price INTEGER,
+                status TEXT DEFAULT 'yangi',
+                usta_id INTEGER,
+                usta_name TEXT,
+                problem_photo TEXT,
+                result_photo TEXT,
+                video TEXT,
+                comment TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 started_at TIMESTAMP,
-                completed_at TIMESTAMP,
-
-                payment_method TEXT,
-                payment_status TEXT DEFAULT 'unpaid',
-
-                start_photo_file_id TEXT,
-                finish_photo_file_id TEXT,
-
-                created_at TIMESTAMP DEFAULT NOW(),
-                accepted_at TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS order_history (
-                id BIGSERIAL PRIMARY KEY,
-                order_id BIGINT NOT NULL,
-                actor_id BIGINT,
-                actor_name TEXT,
-                old_status TEXT,
-                new_status TEXT,
-                note TEXT,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS ratings (
-                id BIGSERIAL PRIMARY KEY,
-                order_id BIGINT UNIQUE NOT NULL,
-                customer_id BIGINT NOT NULL,
-                master_id BIGINT NOT NULL,
-                stars INTEGER NOT NULL,
+                finished_at TIMESTAMP,
+                duration INTEGER,
+                rating INTEGER,
                 review TEXT,
-                photo_file_id TEXT,
-                created_at TIMESTAMP DEFAULT NOW()
+                is_urgent INTEGER DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
-        """)
+        ''')
 
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS coupons (
-                id BIGSERIAL PRIMARY KEY,
-                code TEXT UNIQUE NOT NULL,
-                discount_percent INTEGER NOT NULL,
-                max_uses INTEGER DEFAULT 100,
-                used_count INTEGER DEFAULT 0,
-                is_active BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP DEFAULT NOW()
+        # Ustalar
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS masters (
+                user_id INTEGER PRIMARY KEY,
+                full_name TEXT,
+                phone TEXT,
+                services TEXT,
+                price_per_hour INTEGER,
+                work_area TEXT,
+                work_start TEXT,
+                work_end TEXT,
+                is_24_7 INTEGER DEFAULT 0,
+                rating REAL DEFAULT 0,
+                total_orders INTEGER DEFAULT 0,
+                latitude REAL,
+                longitude REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_active INTEGER DEFAULT 1,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
-        """)
+        ''')
 
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
-                id BIGSERIAL PRIMARY KEY,
-                order_id BIGINT,
-                sender_id BIGINT NOT NULL,
-                receiver_id BIGINT NOT NULL,
-                message TEXT,
-                created_at TIMESTAMP DEFAULT NOW()
+        # Sharhlar
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER,
+                user_id INTEGER,
+                master_id INTEGER,
+                rating INTEGER,
+                review TEXT,
+                photo TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (order_id) REFERENCES orders(id),
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (master_id) REFERENCES users(user_id)
             )
-        """)
+        ''')
 
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_orders_customer
-            ON orders(customer_id)
-        """)
-
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_orders_master
-            ON orders(master_id)
-        """)
-
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_orders_status
-            ON orders(status)
-        """)
-
-    logger.info("PostgreSQL connected and initialized.")
-
-
-# ============================================================
-# USER FUNCTIONS
-# ============================================================
-
-async def get_user(telegram_id: int):
-    async with db_pool.acquire() as conn:
-        return await conn.fetchrow(
-            "SELECT * FROM users WHERE telegram_id=$1",
-            telegram_id,
-        )
-
-
-async def upsert_user(tg_user):
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO users
-            (
-                telegram_id,
-                username,
-                full_name,
-                updated_at
+        # Bonuslar
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS bonuses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                order_id INTEGER,
+                amount INTEGER,
+                type TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (order_id) REFERENCES orders(id)
             )
-            VALUES ($1,$2,$3,NOW())
-            ON CONFLICT (telegram_id)
-            DO UPDATE SET
-                username=EXCLUDED.username,
-                full_name=EXCLUDED.full_name,
-                updated_at=NOW()
-        """,
-            tg_user.id,
-            tg_user.username,
-            tg_user.full_name,
-        )
+        ''')
 
-
-async def set_user_phone(telegram_id: int, phone: str):
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            UPDATE users
-            SET phone=$1,
-                updated_at=NOW()
-            WHERE telegram_id=$2
-        """, phone, telegram_id)
-
-
-async def set_role(telegram_id: int, role: str):
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            UPDATE users
-            SET role=$1,
-                updated_at=NOW()
-            WHERE telegram_id=$2
-        """, role, telegram_id)
-
-
-async def get_or_create_user(tg_user):
-    await upsert_user(tg_user)
-
-    user = await get_user(tg_user.id)
-
-    if not user:
-        raise RuntimeError("User yaratilmadi.")
-
-    return user
-
-
-# ============================================================
-# ORDER FUNCTIONS
-# ============================================================
-
-async def create_order(
-    customer_id,
-    customer_name,
-    customer_phone,
-    service_category,
-    service_code,
-    service_name,
-    address,
-    latitude,
-    longitude,
-    description,
-    requested_time,
-    base_price,
-    discount,
-    total_price,
-    coupon_code=None,
-):
-    async with db_pool.acquire() as conn:
-
-        order_id = await conn.fetchval("""
-            INSERT INTO orders
-            (
-                customer_id,
-                customer_name,
-                customer_phone,
-                service_category,
-                service_code,
-                service_name,
-                address,
-                latitude,
-                longitude,
-                description,
-                requested_time,
-                base_price,
-                discount,
-                total_price,
-                coupon_code,
-                status
+        # Eslatmalar
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                text TEXT,
+                remind_at TIMESTAMP,
+                is_done INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
-            VALUES
-            (
-                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-                $11,$12,$13,$14,$15,$16
+        ''')
+
+        # Xizmat turlari
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS services (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                category TEXT,
+                description TEXT,
+                price INTEGER,
+                is_active INTEGER DEFAULT 1
             )
-            RETURNING id
-        """,
-            customer_id,
-            customer_name,
-            customer_phone,
-            service_category,
-            service_code,
-            service_name,
-            address,
-            latitude,
-            longitude,
-            description,
-            requested_time,
-            base_price,
-            discount,
-            total_price,
-            coupon_code,
-            STATUS_WAITING,
-        )
+        ''')
 
-        await conn.execute("""
-            INSERT INTO order_history
-            (
-                order_id,
-                actor_id,
-                actor_name,
-                old_status,
-                new_status,
-                note
+        # E'lonlar
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS announcements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT,
+                content TEXT,
+                photo TEXT,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-            VALUES ($1,$2,$3,$4,$5,$6)
-        """,
-            order_id,
-            customer_id,
-            customer_name,
-            None,
-            STATUS_WAITING,
-            "Buyurtma yaratildi",
-        )
+        ''')
 
-        return order_id
-
-
-async def get_order(order_id):
-    async with db_pool.acquire() as conn:
-        return await conn.fetchrow(
-            "SELECT * FROM orders WHERE id=$1",
-            order_id,
-        )
-
-
-async def update_order_status(
-    order_id,
-    new_status,
-    actor_id=None,
-    actor_name=None,
-    note=None,
-):
-    async with db_pool.acquire() as conn:
-
-        old = await conn.fetchval(
-            "SELECT status FROM orders WHERE id=$1",
-            order_id,
-        )
-
-        await conn.execute("""
-            UPDATE orders
-            SET status=$1,
-                updated_at=NOW()
-            WHERE id=$2
-        """,
-            new_status,
-            order_id,
-        )
-
-        await conn.execute("""
-            INSERT INTO order_history
-            (
-                order_id,
-                actor_id,
-                actor_name,
-                old_status,
-                new_status,
-                note
+        # 24/7 shosilinch so'rovlar
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS urgent_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER,
+                user_id INTEGER,
+                issue_type TEXT,
+                description TEXT,
+                latitude REAL,
+                longitude REAL,
+                status TEXT DEFAULT 'kutilmoqda',
+                master_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (order_id) REFERENCES orders(id),
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
-            VALUES ($1,$2,$3,$4,$5,$6)
-        """,
-            order_id,
-            actor_id,
-            actor_name,
-            old,
-            new_status,
-            note,
-        )
+        ''')
 
+        conn.commit()
+        conn.close()
+        logger.info("Database initialized successfully")
 
-async def get_customer_orders(customer_id, limit=20):
-    async with db_pool.acquire() as conn:
-        return await conn.fetch("""
-            SELECT *
+    def get_conn(self):
+        return sqlite3.connect(self.db_path)
+
+    # ========== USER METHODS ==========
+
+    def add_user(self, user_id: int, full_name: str, phone: str = "", role: str = "mijoz", lang: str = "uz", username: str = ""):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('''
+            INSERT OR REPLACE INTO users (user_id, full_name, phone, role, lang, username)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (user_id, full_name, phone, role, lang, username))
+        conn.commit()
+        conn.close()
+
+    def get_user(self, user_id: int):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        conn.close()
+        return result
+
+    def get_user_role(self, user_id: int):
+        user = self.get_user(user_id)
+        return user[3] if user else None
+
+    def get_all_users(self, role: str = None):
+        conn = self.get_conn()
+        c = conn.cursor()
+        if role:
+            c.execute('SELECT * FROM users WHERE role = ?', (role,))
+        else:
+            c.execute('SELECT * FROM users')
+        result = c.fetchall()
+        conn.close()
+        return result
+
+    # ========== ORDER METHODS ==========
+
+    def create_order(self, user_id: int, service: str, sub_service: str, description: str,
+                     address: str, lat: float, lon: float, time_slot: str, price: int,
+                     photo: str = "", video: str = "", comment: str = "", is_urgent: int = 0):
+        conn = self.get_conn()
+        c = conn.cursor()
+
+        # Order number generation
+        c.execute("SELECT COUNT(*) FROM orders")
+        count = c.fetchone()[0]
+        order_num = f"#{1000 + count + 1}"
+
+        c.execute('''
+            INSERT INTO orders (order_num, user_id, service, sub_service, description,
+                address, latitude, longitude, time_slot, price, problem_photo, video,
+                comment, status, is_urgent)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yangi', ?)
+        ''', (order_num, user_id, service, sub_service, description, address, lat, lon,
+              time_slot, price, photo, video, comment, is_urgent))
+
+        order_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        return order_id, order_num
+
+    def get_order(self, order_id: int):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('SELECT * FROM orders WHERE id = ?', (order_id,))
+        result = c.fetchone()
+        conn.close()
+        return result
+
+    def get_order_by_num(self, order_num: str):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('SELECT * FROM orders WHERE order_num = ?', (order_num,))
+        result = c.fetchone()
+        conn.close()
+        return result
+
+    def get_user_orders(self, user_id: int, status: str = None):
+        conn = self.get_conn()
+        c = conn.cursor()
+        if status:
+            c.execute('SELECT * FROM orders WHERE user_id = ? AND status = ? ORDER BY id DESC',
+                      (user_id, status))
+        else:
+            c.execute('SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC', (user_id,))
+        result = c.fetchall()
+        conn.close()
+        return result
+
+    def get_master_orders(self, master_id: int, status: str = None):
+        conn = self.get_conn()
+        c = conn.cursor()
+        if status:
+            c.execute('SELECT * FROM orders WHERE usta_id = ? AND status = ? ORDER BY id DESC',
+                      (master_id, status))
+        else:
+            c.execute('SELECT * FROM orders WHERE usta_id = ? ORDER BY id DESC', (master_id,))
+        result = c.fetchall()
+        conn.close()
+        return result
+
+    def update_order_status(self, order_id: int, status: str, master_id: int = None,
+                            master_name: str = None, duration: int = None, price: int = None,
+                            result_photo: str = ""):
+        conn = self.get_conn()
+        c = conn.cursor()
+
+        updates = []
+        params = []
+
+        if status:
+            updates.append("status = ?")
+            params.append(status)
+            if status == "qabul_qilingan":
+                updates.append("started_at = ?")
+                params.append(datetime.now().isoformat())
+            elif status == "tugallangan":
+                updates.append("finished_at = ?")
+                params.append(datetime.now().isoformat())
+
+        if master_id:
+            updates.append("usta_id = ?")
+            params.append(master_id)
+        if master_name:
+            updates.append("usta_name = ?")
+            params.append(master_name)
+        if duration is not None:
+            updates.append("duration = ?")
+            params.append(duration)
+        if price is not None:
+            updates.append("price = ?")
+            params.append(price)
+        if result_photo:
+            updates.append("result_photo = ?")
+            params.append(result_photo)
+
+        if updates:
+            query = f"UPDATE orders SET {', '.join(updates)} WHERE id = ?"
+            params.append(order_id)
+            c.execute(query, params)
+
+        conn.commit()
+        conn.close()
+
+    def get_all_orders(self, status: str = None):
+        conn = self.get_conn()
+        c = conn.cursor()
+        if status:
+            c.execute('SELECT * FROM orders WHERE status = ? ORDER BY id DESC', (status,))
+        else:
+            c.execute('SELECT * FROM orders ORDER BY id DESC')
+        result = c.fetchall()
+        conn.close()
+        return result
+
+    def get_orders_stats(self):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('''
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'yangi' THEN 1 ELSE 0 END) as new,
+                SUM(CASE WHEN status = 'qabul_qilingan' THEN 1 ELSE 0 END) as accepted,
+                SUM(CASE WHEN status = 'jarayonda' THEN 1 ELSE 0 END) as in_progress,
+                SUM(CASE WHEN status = 'tugallangan' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status = 'bekor_qilingan' THEN 1 ELSE 0 END) as cancelled,
+                SUM(price) as total_price
             FROM orders
-            WHERE customer_id=$1
-            ORDER BY created_at DESC
-            LIMIT $2
-        """, customer_id, limit)
+        ''')
+        result = c.fetchone()
+        conn.close()
+        return result
 
+    # ========== MASTER METHODS ==========
 
-async def get_master_orders(master_id, limit=50):
-    async with db_pool.acquire() as conn:
-        return await conn.fetch("""
-            SELECT *
-            FROM orders
-            WHERE master_id=$1
-            ORDER BY created_at DESC
-            LIMIT $2
-        """, master_id, limit)
+    def add_master(self, user_id: int, full_name: str, phone: str, services: str,
+                   price: int, work_area: str, work_start: str, work_end: str,
+                   is_24_7: int = 0, lat: float = None, lon: float = None):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('''
+            INSERT OR REPLACE INTO masters (user_id, full_name, phone, services,
+                price_per_hour, work_area, work_start, work_end, is_24_7, latitude, longitude)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, full_name, phone, services, price, work_area, work_start, work_end,
+              is_24_7, lat, lon))
+        conn.commit()
+        conn.close()
+        # Update user role
+        self.add_user(user_id, full_name, phone, "usta")
 
+    def get_master(self, user_id: int):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('SELECT * FROM masters WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        conn.close()
+        return result
 
-async def get_waiting_orders(limit=20):
-    async with db_pool.acquire() as conn:
-        return await conn.fetch("""
-            SELECT *
-            FROM orders
-            WHERE status IN ('waiting','offered')
-            ORDER BY created_at ASC
-            LIMIT $1
-        """, limit)
+    def get_all_masters(self, is_active: int = 1):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('SELECT * FROM masters WHERE is_active = ?', (is_active,))
+        result = c.fetchall()
+        conn.close()
+        return result
 
+    def update_master_rating(self, master_id: int, rating: int):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('''
+            UPDATE masters
+            SET rating = (rating * total_orders + ?) / (total_orders + 1),
+                total_orders = total_orders + 1
+            WHERE user_id = ?
+        ''', (rating, master_id))
+        conn.commit()
+        conn.close()
 
-# ============================================================
-# HISTORY
-# ============================================================
+    # ========== REVIEW METHODS ==========
 
-async def get_order_history(order_id):
-    async with db_pool.acquire() as conn:
-        return await conn.fetch("""
-            SELECT *
-            FROM order_history
-            WHERE order_id=$1
-            ORDER BY created_at ASC
-        """, order_id)
+    def add_review(self, order_id: int, user_id: int, master_id: int, rating: int, review: str, photo: str = ""):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO reviews (order_id, user_id, master_id, rating, review, photo)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (order_id, user_id, master_id, rating, review, photo))
+        conn.commit()
+        conn.close()
+        self.update_master_rating(master_id, rating)
 
+    def get_master_reviews(self, master_id: int):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('SELECT * FROM reviews WHERE master_id = ? ORDER BY id DESC', (master_id,))
+        result = c.fetchall()
+        conn.close()
+        return result
 
-# ============================================================
-# COUPON
-# ============================================================
+    # ========== BONUS METHODS ==========
 
-async def check_coupon(code: str):
-    code = code.strip().upper()
+    def add_bonus(self, user_id: int, order_id: int, amount: int, bonus_type: str):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO bonuses (user_id, order_id, amount, type)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, order_id, amount, bonus_type))
+        conn.commit()
+        conn.close()
 
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("""
-            SELECT *
-            FROM coupons
-            WHERE code=$1
-              AND is_active=TRUE
-              AND used_count < max_uses
-        """, code)
+    def get_user_bonuses(self, user_id: int):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('SELECT SUM(amount) FROM bonuses WHERE user_id = ?', (user_id,))
+        total = c.fetchone()[0] or 0
+        conn.close()
+        return total
 
-        return row
+    # ========== REMINDER METHODS ==========
 
+    def add_reminder(self, user_id: int, text: str, remind_at: datetime):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO reminders (user_id, text, remind_at)
+            VALUES (?, ?, ?)
+        ''', (user_id, text, remind_at.isoformat()))
+        conn.commit()
+        conn.close()
 
-async def use_coupon(code: str):
-    if not code:
-        return
+    def get_reminders(self, user_id: int):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('SELECT * FROM reminders WHERE user_id = ? AND is_done = 0 ORDER BY remind_at',
+                  (user_id,))
+        result = c.fetchall()
+        conn.close()
+        return result
 
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            UPDATE coupons
-            SET used_count=used_count+1
-            WHERE code=$1
-        """, code.upper())
+    # ========== ANNOUNCEMENT METHODS ==========
 
+    def add_announcement(self, title: str, content: str, photo: str = ""):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO announcements (title, content, photo)
+            VALUES (?, ?, ?)
+        ''', (title, content, photo))
+        conn.commit()
+        conn.close()
 
-# ============================================================
-# MASTER SEARCH
-# ============================================================
+    def get_active_announcements(self):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('SELECT * FROM announcements WHERE is_active = 1 ORDER BY id DESC')
+        result = c.fetchall()
+        conn.close()
+        return result
 
-async def find_available_masters(
-    service_category=None,
-    latitude=None,
-    longitude=None,
-):
-    async with db_pool.acquire() as conn:
+    # ========== URGENT REQUEST METHODS ==========
 
-        # First: online masters
-        rows = await conn.fetch("""
-            SELECT *
-            FROM users
-            WHERE role='master'
-              AND is_active=TRUE
-              AND is_online=TRUE
-            ORDER BY rating DESC, completed_orders ASC
-            LIMIT 10
-        """)
+    def add_urgent_request(self, user_id: int, order_id: int, issue_type: str,
+                           description: str, lat: float, lon: float):
+        conn = self.get_conn()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO urgent_requests (user_id, order_id, issue_type, description,
+                latitude, longitude)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (user_id, order_id, issue_type, description, lat, lon))
+        conn.commit()
+        conn.close()
 
-        if rows:
-            return rows
+    def get_urgent_requests(self, status: str = None):
+        conn = self.get_conn()
+        c = conn.cursor()
+        if status:
+            c.execute('SELECT * FROM urgent_requests WHERE status = ? ORDER BY id DESC',
+                      (status,))
+        else:
+            c.execute('SELECT * FROM urgent_requests ORDER BY id DESC')
+        result = c.fetchall()
+        conn.close()
+        return result
 
-        # If nobody is online — active masters
-        return await conn.fetch("""
-            SELECT *
-            FROM users
-            WHERE role='master'
-              AND is_active=TRUE
-            ORDER BY rating DESC, completed_orders ASC
-            LIMIT 10
-        """)
+# ======================== STATES ========================
 
+class RegistrationState(StatesGroup):
+    waiting_name = State()
+    waiting_phone = State()
+    waiting_role = State()
 
-# ============================================================
-# MASTER ASSIGN
-# ============================================================
+class OrderState(StatesGroup):
+    waiting_service = State()
+    waiting_sub_service = State()
+    waiting_name = State()
+    waiting_phone = State()
+    waiting_address = State()
+    waiting_photo = State()
+    waiting_video = State()
+    waiting_comment = State()
+    waiting_time = State()
+    waiting_confirm = State()
 
-async def assign_master(order_id, master):
-    async with db_pool.acquire() as conn:
+class MasterState(StatesGroup):
+    waiting_order_action = State()
+    waiting_start_work = State()
+    waiting_finish_work = State()
+    waiting_result_photo = State()
+    waiting_price = State()
+    waiting_duration = State()
 
-        await conn.execute("""
-            UPDATE orders
-            SET
-                master_id=$1,
-                master_name=$2,
-                master_phone=$3,
-                status='offered',
-                updated_at=NOW()
-            WHERE id=$4
-        """,
-            master["telegram_id"],
-            master["full_name"],
-            master["phone"],
-            order_id,
-        )
+class AdminState(StatesGroup):
+    waiting_add_master_name = State()
+    waiting_add_master_phone = State()
+    waiting_add_master_services = State()
+    waiting_add_master_price = State()
+    waiting_add_master_area = State()
+    waiting_add_master_time = State()
+    waiting_announcement_title = State()
+    waiting_announcement_content = State()
+    waiting_announcement_photo = State()
+    waiting_broadcast = State()
 
-        await conn.execute("""
-            INSERT INTO order_history
-            (
-                order_id,
-                actor_id,
-                actor_name,
-                old_status,
-                new_status,
-                note
-            )
-            VALUES ($1,$2,$3,$4,$5,$6)
-        """,
-            order_id,
-            master["telegram_id"],
-            master["full_name"],
-            STATUS_WAITING,
-            STATUS_OFFERED,
-            "Ustaga taklif yuborildi",
-        )
+class UrgentState(StatesGroup):
+    waiting_issue_type = State()
+    waiting_description = State()
+    waiting_location = State()
+    waiting_photo = State()
 
+class ReviewState(StatesGroup):
+    waiting_master = State()
+    waiting_rating = State()
+    waiting_review = State()
+    waiting_photo = State()
 
-# ============================================================
-# RATING
-# ============================================================
+class ReminderState(StatesGroup):
+    waiting_text = State()
+    waiting_time = State()
 
-async def save_rating(
-    order_id,
-    customer_id,
-    master_id,
-    stars,
-    review,
-    photo_file_id=None,
-):
-    async with db_pool.acquire() as conn:
+# ======================== KEYBOARDS ========================
 
-        exists = await conn.fetchval("""
-            SELECT id
-            FROM ratings
-            WHERE order_id=$1
-        """, order_id)
+def get_main_keyboard(role: str):
+    kb = []
 
-        if exists:
-            return False
+    if role == "mijoz":
+        kb = [
+            [KeyboardButton(text="🛒 Buyurtma berish")],
+            [KeyboardButton(text="📋 Mening buyurtmalarim"), KeyboardButton(text="🔍 Buyurtma holati")],
+            [KeyboardButton(text="❌ Bekor qilish"), KeyboardButton(text="🔁 Qayta buyurtma")],
+            [KeyboardButton(text="👨‍🔧 Mening ustalarim"), KeyboardButton(text="⭐ Reytingim")],
+            [KeyboardButton(text="📝 Sharh qoldirish"), KeyboardButton(text="📌 Eslatmalarim")],
+            [KeyboardButton(text="🗺️ Yaqin atrofdagi ustalar"), KeyboardButton(text="📅 Yozilma")],
+            [KeyboardButton(text="🎁 Loyallik va bonuslar"), KeyboardButton(text="🤖 AI yordamchi")],
+            [KeyboardButton(text="⚙️ Sozlamalar"), KeyboardButton(text="📊 Mening statistika")],
+            [KeyboardButton(text="🏷️ Chegirmalar"), KeyboardButton(text="📞 Tez yordam")],
+            [KeyboardButton(text="🔔 Bildirishnomalar"), KeyboardButton(text="📁 Mening hujjatlarim")],
+            [KeyboardButton(text="🕊️ Do'stga tavsiya qilish"), KeyboardButton(text="📞 Dispetcher")],
+            [KeyboardButton(text="🚨 24/7 Shosilinch rejim")],
+            [KeyboardButton(text="🚪 Chiqish")]
+        ]
+    elif role == "usta":
+        kb = [
+            [KeyboardButton(text="📋 Yangi buyurtmalar"), KeyboardButton(text="✅ Mening buyurtmalarim")],
+            [KeyboardButton(text="⏳ Tarix"), KeyboardButton(text="💰 Ish haqi va hisobot")],
+            [KeyboardButton(text="⭐ Reytingim"), KeyboardButton(text="📅 Kunlik jadval")],
+            [KeyboardButton(text="🔔 Mijozlar bilan bog'lanish"), KeyboardButton(text="📸 Galereya")],
+            [KeyboardButton(text="🛠 Xizmatlarni boshqarish"), KeyboardButton(text="📊 Ish statistikasi")],
+            [KeyboardButton(text="🏷️ Mening narxlarim"), KeyboardButton(text="📍 Ish hududim")],
+            [KeyboardButton(text="📅 Dam olish kunlari"), KeyboardButton(text="🔔 Sozlamalar")],
+            [KeyboardButton(text="📝 Reytingni oshirish"), KeyboardButton(text="🎁 Usta bonuslari")],
+            [KeyboardButton(text="🤖 AI yordamchi"), KeyboardButton(text="📞 Texnik yordam")],
+            [KeyboardButton(text="📢 E'lonlar"), KeyboardButton(text="🏆 TOP 10")],
+            [KeyboardButton(text="📞 Dispetcher"), KeyboardButton(text="🚨 24/7 Shosilinch rejim")],
+            [KeyboardButton(text="🚪 Chiqish")]
+        ]
+    elif role == "admin":
+        kb = [
+            [KeyboardButton(text="👥 Foydalanuvchilar"), KeyboardButton(text="🛠 Buyurtmalar")],
+            [KeyboardButton(text="👨‍🔧 Ustalar"), KeyboardButton(text="⭐ Reyting va sharhlar")],
+            [KeyboardButton(text="🎁 Loyallik"), KeyboardButton(text="💰 To'lovlar")],
+            [KeyboardButton(text="🏷️ Chegirmalar"), KeyboardButton(text="🛠 Xizmat turlari")],
+            [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="📢 E'lonlar")],
+            [KeyboardButton(text="📞 Dispetcher"), KeyboardButton(text="⚙️ Sozlamalar")],
+            [KeyboardButton(text="📸 Galereya"), KeyboardButton(text="📱 Botni boshqarish")],
+            [KeyboardButton(text="🚨 24/7 Shosilinch rejim")],
+            [KeyboardButton(text="🚪 Chiqish")]
+        ]
 
-        await conn.execute("""
-            INSERT INTO ratings
-            (
-                order_id,
-                customer_id,
-                master_id,
-                stars,
-                review,
-                photo_file_id
-            )
-            VALUES ($1,$2,$3,$4,$5,$6)
-        """,
-            order_id,
-            customer_id,
-            master_id,
-            stars,
-            review,
-            photo_file_id,
-        )
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-        await conn.execute("""
-            UPDATE users
-            SET
-                rating =
-                    (
-                        rating * rating_count + $1
-                    )
-                    /
-                    (rating_count + 1),
-                rating_count=rating_count+1,
-                updated_at=NOW()
-            WHERE telegram_id=$2
-        """,
-            stars,
-            master_id,
-        )
+def get_inline_keyboard(buttons: List[Tuple[str, str]], row_width: int = 2):
+    kb = []
+    row = []
+    for text, callback in buttons:
+        row.append(InlineKeyboardButton(text=text, callback_data=callback))
+        if len(row) >= row_width:
+            kb.append(row)
+            row = []
+    if row:
+        kb.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
-        await conn.execute("""
-            UPDATE users
-            SET
-                bonus_points=bonus_points+10,
-                updated_at=NOW()
-            WHERE telegram_id=$1
-        """,
-            customer_id,
-        )
+def get_back_keyboard():
+    return get_inline_keyboard([
+        ("⬅️ Orqaga", "back"),
+        ("🏠 Bosh menyu", "home")
+    ])
 
-        return True
+def get_order_status_keyboard(order_id: int):
+    return get_inline_keyboard([
+        ("✅ Qabul qilish", f"accept_{order_id}"),
+        ("❌ Rad etish", f"reject_{order_id}"),
+        ("📸 Rasmlarni ko'rish", f"view_photos_{order_id}")
+    ])
 
+def get_master_order_keyboard(order_id: int):
+    return get_inline_keyboard([
+        ("🔧 Ishni boshlash", f"start_work_{order_id}"),
+        ("✅ Ishni yakunlash", f"finish_work_{order_id}"),
+        ("📞 Qo'ng'iroq", f"call_{order_id}"),
+        ("💬 Xabar", f"chat_{order_id}")
+    ])
 
-# ============================================================
-# FORMAT ORDER
-# ============================================================
+# ======================== MESSAGES ========================
 
-def format_order(order):
-    status_map = {
-        STATUS_WAITING: "⏳ Kutilmoqda",
-        STATUS_OFFERED: "📨 Ustaga yuborildi",
-        STATUS_ACCEPTED: "✅ Qabul qilindi",
-        STATUS_ON_WAY: "🚗 Yo'lda",
-        STATUS_STARTED: "🔧 Jarayonda",
-        STATUS_COMPLETED: "🏁 Tugallandi",
-        STATUS_CANCELLED: "❌ Bekor qilindi",
-        STATUS_REJECTED: "❌ Rad etildi",
+TEXTS = {
+    "uz": {
+        "welcome": "👋 Assalomu alaykum! USTA 24 ANDIJON botiga xush kelibsiz!",
+        "ask_name": "📌 Iltimos, ismingizni kiriting (Familiya kerak emas!):",
+        "ask_phone": "📱 Telefon raqamingizni kiriting (+998901234567):",
+        "ask_role": "👤 Kim sifatida ro'yxatdan o'tasiz?",
+        "role_mijoz": "👤 Mijoz",
+        "role_usta": "👨‍🔧 Usta",
+        "role_admin": "👨‍💼 Admin",
+        "registered": "✅ Ro'yxatdan o'tdingiz!",
+        "main_menu": "🏠 Bosh menyu",
+        "order_created": "✅ Buyurtma yaratildi!",
+        "order_accepted": "✅ Buyurtma qabul qilindi!",
+        "order_rejected": "❌ Buyurtma rad etildi",
+        "order_completed": "✅ Buyurtma yakunlandi!",
+        "no_orders": "📭 Sizda buyurtmalar yo'q",
+        "choose_service": "🛠 Xizmat turini tanlang:",
+        "choose_sub_service": "📋 Xizmat turini tanlang:",
+        "enter_address": "📍 Manzilingizni kiriting yoki geolokatsiya yuboring:",
+        "send_photo": "📸 Muammo rasmini yuboring (ixtiyoriy):",
+        "send_video": "🎥 Video yuboring (ixtiyoriy):",
+        "enter_comment": "📝 Izoh qoldiring (ixtiyoriy):",
+        "choose_time": "🕐 Vaqtni tanlang:",
+        "confirm_order": "✅ Buyurtmani tasdiqlaysizmi?",
+        "order_confirmed": "✅ Buyurtma tasdiqlandi!",
+        "order_cancelled": "❌ Buyurtma bekor qilindi",
+        "enter_review": "📝 Sharhingizni yozing:",
+        "choose_rating": "⭐ Baho bering:",
+        "review_sent": "✅ Sharhingiz yuborildi!",
+        "urgent_help": "🚨 Shosilingch yordam!",
+        "choose_issue": "⚡ Muammo turini tanlang:",
+        "urgent_sent": "🚨 Shosilingch so'rov yuborildi!",
+        "dispetcher_call": f"📞 Dispetcher: {DISPETCHER_PHONE}",
+        "dispetcher_working": "🕐 24/7 ishlaydi! Kutish yo'q!",
+        "back": "⬅️ Orqaga",
+        "home": "🏠 Bosh menyu",
+        "logout": "🚪 Chiqish",
+        "settings": "⚙️ Sozlamalar",
+        "language": "🌐 Til: 🇺🇿 O'zbek",
+        "stats": "📊 Statistika",
+        "bonus": "🎁 Bonuslar",
+        "no_bonus": "🎁 Sizda bonuslar yo'q",
+        "error": "❌ Xatolik yuz berdi. Qayta urinib ko'ring.",
+        "not_found": "❌ Ma'lumot topilmadi",
+    },
+    "ru": {
+        "welcome": "👋 Добро пожаловать в USTA 24 ANDIJON!",
+        "ask_name": "📌 Введите ваше имя (Фамилия не нужна!):",
+        "ask_phone": "📱 Введите номер телефона (+998901234567):",
+        "ask_role": "👤 Кем вы хотите зарегистрироваться?",
+        "role_mijoz": "👤 Клиент",
+        "role_usta": "👨‍🔧 Мастер",
+        "role_admin": "👨‍💼 Админ",
+        # ... other translations
+    },
+    "en": {
+        "welcome": "👋 Welcome to USTA 24 ANDIJON!",
+        "ask_name": "📌 Please enter your name (No surname!):",
+        "ask_phone": "📱 Enter your phone number (+998901234567):",
+        "ask_role": "👤 Who are you?",
+        "role_mijoz": "👤 Client",
+        "role_usta": "👨‍🔧 Master",
+        "role_admin": "👨‍💼 Admin",
+        # ... other translations
     }
+}
 
-    status = status_map.get(
-        order["status"],
-        order["status"],
-    )
+# ======================== BOT INIT ========================
 
-    text = (
-        f"🆔 <b>Buyurtma #{order['id']}</b>\n"
-        f"🛠 Xizmat: <b>{order['service_name']}</b>\n"
-        f"👤 Mijoz: {order['customer_name']}\n"
-        f"📞 Telefon: {order['customer_phone'] or '-'}\n"
-        f"📍 Manzil: {order['address'] or '-'}\n"
-        f"📝 Izoh: {order['description'] or '-'}\n"
-        f"🕐 Vaqt: {order['requested_time']}\n"
-        f"💰 Narx: <b>{float(order['total_price']):,.0f} so'm</b>\n"
-        f"📌 Holat: <b>{status}</b>\n"
-    )
+storage = MemoryStorage()
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=storage)
+db = Database()
 
-    if order["master_name"]:
-        text += (
-            f"👨‍🔧 Usta: {order['master_name']}\n"
+# ======================== HANDLERS ========================
+
+# ---------- START ----------
+
+@dp.message(Command("start"))
+async def start_cmd(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    user = db.get_user(user_id)
+
+    if user:
+        # User exists
+        role = user[3]
+        await message.answer(
+            TEXTS["uz"]["welcome"],
+            reply_markup=get_main_keyboard(role)
         )
-
-    if order["arrival_minutes"]:
-        text += (
-            f"🚗 Yetib borish: "
-            f"{order['arrival_minutes']} daqiqa\n"
-        )
-
-    return text
-
-
-# ============================================================
-# START
-# ============================================================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if not update.effective_user:
+        await state.clear()
         return
 
-    user = await get_or_create_user(
-        update.effective_user
-    )
+    await message.answer(TEXTS["uz"]["welcome"])
+    await message.answer(TEXTS["uz"]["ask_name"])
+    await state.set_state(RegistrationState.waiting_name)
 
-    if user["role"] == ROLE_ADMIN:
-        await update.message.reply_text(
-            "👑 <b>USTA 24 ANDIJON</b>\n\n"
-            "Admin paneliga xush kelibsiz.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=admin_menu(),
-        )
+# ---------- REGISTRATION ----------
+
+@dp.message(RegistrationState.waiting_name)
+async def reg_name(message: Message, state: FSMContext):
+    if len(message.text) < 2:
+        await message.answer("❌ Iltimos, ismingizni to'g'ri kiriting (kamida 2 harf):")
         return
 
-    if user["role"] == ROLE_MASTER:
-        await update.message.reply_text(
-            "👨‍🔧 <b>USTA 24 ANDIJON</b>\n\n"
-            "Usta paneliga xush kelibsiz.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=master_menu(),
-        )
+    await state.update_data(full_name=message.text)
+    await message.answer(TEXTS["uz"]["ask_phone"])
+    await state.set_state(RegistrationState.waiting_phone)
+
+@dp.message(RegistrationState.waiting_phone)
+async def reg_phone(message: Message, state: FSMContext):
+    phone = message.text
+    # Simple phone validation
+    if len(phone) < 10:
+        await message.answer("❌ Telefon raqam noto'g'ri. Masalan: +998901234567")
         return
 
-    if not user["phone"]:
-
-        await update.message.reply_text(
-            "🇺🇿 <b>Assalomu alaykum!</b>\n\n"
-            "USTA 24 ANDIJON xizmatiga xush kelibsiz.\n\n"
-            "Davom etish uchun telefon raqamingizni yuboring.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=phone_keyboard(),
-        )
-        return
-
-    await update.message.reply_text(
-        "🏠 <b>USTA 24 ANDIJON</b>\n\n"
-        "Bosh menyu:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=main_menu(),
-    )
-
-
-# ============================================================
-# PHONE
-# ============================================================
-
-async def handle_contact(update, context):
-
-    contact = update.message.contact
-
-    if contact.user_id and contact.user_id != update.effective_user.id:
-        await update.message.reply_text(
-            "❌ Iltimos, o'zingizning telefon raqamingizni yuboring."
-        )
-        return
-
-    phone = contact.phone_number
-
-    await set_user_phone(
-        update.effective_user.id,
-        phone,
-    )
-
-    await update.message.reply_text(
-        "✅ Telefon raqamingiz saqlandi.\n\n"
-        "🏠 Bosh menyu:",
-        reply_markup=main_menu(),
-    )
-
-
-# ============================================================
-# SERVICES
-# ============================================================
-
-async def services_command(update, context):
-
-    text = "🛠 <b>USTA 24 XIZMATLARI</b>\n\n"
-
-    for category in SERVICES.values():
-        text += f"<b>{category['name']}</b>\n"
-
-        for item in category["items"].values():
-            text += (
-                f"• {item[0]} — "
-                f"{item[1]:,} so'm dan\n"
-            )
-
-        text += "\n"
-
-    await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-    )
-
-
-def service_keyboard():
-
-    buttons = []
-
-    for key, category in SERVICES.items():
-        buttons.append([
-            InlineKeyboardButton(
-                category["name"],
-                callback_data=f"cat:{key}",
-            )
+    await state.update_data(phone=phone)
+    await message.answer(
+        TEXTS["uz"]["ask_role"],
+        reply_markup=get_inline_keyboard([
+            ("👤 Mijoz", "role_mijoz"),
+            ("👨‍🔧 Usta", "role_usta"),
+            ("👨‍💼 Admin", "role_admin")
         ])
-
-    return InlineKeyboardMarkup(buttons)
-
-
-# ============================================================
-# NEW ORDER
-# ============================================================
-
-async def new_order(update, context):
-
-    user = await get_user(
-        update.effective_user.id
     )
+    await state.set_state(RegistrationState.waiting_role)
 
-    if not user or not user["phone"]:
-        await update.message.reply_text(
-            "Avval telefon raqamingizni yuboring.",
-            reply_markup=phone_keyboard(),
-        )
-        return
+@dp.callback_query(RegistrationState.waiting_role)
+async def reg_role(callback: CallbackQuery, state: FSMContext):
+    role = callback.data.replace("role_", "")
+    data = await state.get_data()
+    user_id = callback.from_user.id
+    full_name = data.get("full_name")
+    phone = data.get("phone")
+    username = callback.from_user.username or ""
 
-    context.user_data["order"] = {}
+    # Save to database
+    db.add_user(user_id, full_name, phone, role, "uz", username)
 
-    await update.message.reply_text(
-        "🛒 <b>Yangi buyurtma</b>\n\n"
-        "Xizmat turini tanlang:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=service_keyboard(),
+    await callback.message.edit_text(TEXTS["uz"]["registered"])
+    await callback.message.answer(
+        TEXTS["uz"]["main_menu"],
+        reply_markup=get_main_keyboard(role)
     )
-
-
-# ============================================================
-# CATEGORY
-# ============================================================
-
-async def category_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    category_key = query.data.split(":", 1)[1]
-
-    category = SERVICES.get(category_key)
-
-    if not category:
-        return
-
-    context.user_data["order"]["category"] = category_key
-
-    buttons = []
-
-    for code, item in category["items"].items():
-        buttons.append([
-            InlineKeyboardButton(
-                f"{item[0]} — {item[1]:,} so'm",
-                callback_data=f"service:{code}",
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            "⬅️ Orqaga",
-            callback_data="back:categories",
-        )
-    ])
-
-    await query.edit_message_text(
-        f"🛠 <b>{category['name']}</b>\n\n"
-        "Xizmatni tanlang:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
-
-
-# ============================================================
-# SERVICE
-# ============================================================
-
-async def service_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    order_data = context.user_data.get("order", {})
-
-    category_key = order_data.get("category")
-
-    if not category_key:
-        return
-
-    service_code = query.data.split(":", 1)[1]
-
-    category = SERVICES[category_key]
-
-    item = category["items"].get(service_code)
-
-    if not item:
-        return
-
-    service_name, price = item
-
-    order_data["service_code"] = service_code
-    order_data["service_name"] = service_name
-    order_data["base_price"] = price
-
-    context.user_data["order"] = order_data
-
-    await query.edit_message_text(
-        f"✅ <b>{service_name}</b>\n"
-        f"💰 Boshlang'ich narx: <b>{price:,} so'm</b>\n\n"
-        "📍 Endi manzilingizni yuboring.",
-        parse_mode=ParseMode.HTML,
-    )
-
-    await context.bot.send_message(
-        chat_id=update.effective_user.id,
-        text="📍 Geolokatsiyani yuboring:",
-        reply_markup=location_keyboard(),
-    )
-
-    return C_LOCATION
-
-
-# ============================================================
-# LOCATION
-# ============================================================
-
-async def handle_location(update, context):
-
-    if not update.message.location:
-        return
-
-    loc = update.message.location
-
-    context.user_data["order"]["latitude"] = loc.latitude
-    context.user_data["order"]["longitude"] = loc.longitude
-    context.user_data["order"]["address"] = (
-        f"📍 Geolokatsiya: "
-        f"{loc.latitude:.6f}, {loc.longitude:.6f}"
-    )
-
-    await update.message.reply_text(
-        "✅ Geolokatsiya qabul qilindi.\n\n"
-        "📝 Buyurtma haqida izoh yozing.\n"
-        "Agar izoh kerak bo'lmasa, «O'tkazib yuborish» tugmasini bosing.",
-        reply_markup=ReplyKeyboardMarkup(
-            [["⏭ O'tkazib yuborish"]],
-            resize_keyboard=True,
-        ),
-    )
-
-    return C_DESCRIPTION
-
-
-# ============================================================
-# MANUAL ADDRESS
-# ============================================================
-
-async def manual_address(update, context):
-
-    if update.message.text == "✍️ Manzilni qo'lda yozish":
-
-        await update.message.reply_text(
-            "📍 Manzilingizni yozing:",
-            reply_markup=ReplyKeyboardRemove(),
-        )
-
-        return C_ADDRESS
-
-
-async def receive_address(update, context):
-
-    context.user_data["order"]["address"] = (
-        update.message.text.strip()
-    )
-
-    await update.message.reply_text(
-        "📝 Buyurtma haqida izoh yozing.\n"
-        "Kerak bo'lmasa «O'tkazib yuborish» deb yozing.",
-        reply_markup=ReplyKeyboardMarkup(
-            [["⏭ O'tkazib yuborish"]],
-            resize_keyboard=True,
-        ),
-    )
-
-    return C_DESCRIPTION
-
-
-# ============================================================
-# DESCRIPTION
-# ============================================================
-
-async def receive_description(update, context):
-
-    text = update.message.text.strip()
-
-    if text == "⏭ O'tkazib yuborish":
-        text = ""
-
-    context.user_data["order"]["description"] = text
-
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "🔴 Hozir",
-                callback_data="time:now",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🕐 Keyinroq",
-                callback_data="time:later",
-            ),
-        ],
-    ])
-
-    await update.message.reply_text(
-        "🕐 <b>Qachon usta kerak?</b>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=keyboard,
-    )
-
-    return C_TIME
-
-
-# ============================================================
-# TIME
-# ============================================================
-
-async def time_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    value = query.data.split(":", 1)[1]
-
-    if value == "now":
-        requested_time = "Hozir"
-    else:
-        requested_time = "Keyinroq"
-
-    context.user_data["order"]["requested_time"] = requested_time
-
-    await query.edit_message_text(
-        "🎟 Kupon kodi bormi?\n\n"
-        "Bo'lmasa, «Kuponsiz» tugmasini bosing.",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "🎟 Kupon kiritish",
-                    callback_data="coupon:yes",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "⏭ Kuponsiz",
-                    callback_data="coupon:no",
-                ),
-            ],
-        ]),
-    )
-
-    return C_COUPON
-
-
-# ============================================================
-# COUPON
-# ============================================================
-
-async def coupon_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    value = query.data.split(":", 1)[1]
-
-    if value == "yes":
-
-        await query.edit_message_text(
-            "🎟 Kupon kodini yozing:"
-        )
-
-        return C_COUPON
-
-    context.user_data["order"]["coupon_code"] = None
-    await show_confirmation(update, context)
-
-
-async def receive_coupon(update, context):
-
-    code = update.message.text.strip().upper()
-
-    coupon = await check_coupon(code)
-
-    if not coupon:
-        await update.message.reply_text(
-            "❌ Kupon topilmadi yoki muddati tugagan.\n"
-            "Boshqa kod kiriting yoki «Kuponsiz» deb yozing."
-        )
-        return C_COUPON
-
-    context.user_data["order"]["coupon_code"] = code
-    context.user_data["order"]["coupon_percent"] = (
-        coupon["discount_percent"]
-    )
-
-    await update.message.reply_text(
-        f"✅ Kupon qabul qilindi: "
-        f"{coupon['discount_percent']}% chegirma."
-    )
-
-    await show_confirmation_message(
-        update,
-        context,
-    )
-
-    return C_CONFIRM
-
-
-# ============================================================
-# CONFIRMATION
-# ============================================================
-
-async def show_confirmation(update, context):
-    order = context.user_data["order"]
-
-    base = float(order["base_price"])
-
-    percent = order.get(
-        "coupon_percent",
-        0,
-    )
-
-    discount = base * percent / 100
-    total = base - discount
-
-    order["discount"] = discount
-    order["total_price"] = total
-
-    text = (
-        "🧾 <b>BUYURTMA TASDIG'I</b>\n\n"
-        f"🛠 Xizmat: {order['service_name']}\n"
-        f"📍 Manzil: {order.get('address','-')}\n"
-        f"📝 Izoh: {order.get('description') or '-'}\n"
-        f"🕐 Vaqt: {order.get('requested_time','Hozir')}\n\n"
-        f"💰 Narx: {base:,.0f} so'm\n"
-    )
-
-    if discount:
-        text += (
-            f"🎟 Chegirma: -{discount:,.0f} so'm\n"
-        )
-
-    text += (
-        f"💵 <b>Jami: {total:,.0f} so'm</b>\n\n"
-        "Buyurtmani tasdiqlaysizmi?"
-    )
-
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "✅ Tasdiqlash",
-                callback_data="order:confirm",
-            ),
-            InlineKeyboardButton(
-                "❌ Bekor qilish",
-                callback_data="order:cancel",
-            ),
-        ]
-    ])
-
-    if hasattr(update, "message") and update.message:
-        await update.message.reply_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard,
-        )
-    else:
-        await update.callback_query.edit_message_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard,
-        )
-
-
-async def show_confirmation_message(update, context):
-    await show_confirmation(
-        update,
-        context,
-    )
-
-
-# ============================================================
-# CONFIRM ORDER
-# ============================================================
-
-async def confirm_order_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    value = query.data.split(":", 1)[1]
-
-    if value == "cancel":
-
-        context.user_data.pop("order", None)
-
-        await query.edit_message_text(
-            "❌ Buyurtma bekor qilindi."
-        )
-
-        await context.bot.send_message(
-            update.effective_user.id,
-            "🏠 Bosh menyu:",
-        )
-
-        return
-
-    order = context.user_data.get("order")
-
-    if not order:
-        await query.edit_message_text(
-            "❌ Buyurtma ma'lumotlari topilmadi."
-        )
-        return
-
-    user = await get_user(
-        update.effective_user.id
-    )
-
-    order_id = await create_order(
-        customer_id=update.effective_user.id,
-        customer_name=user["full_name"],
-        customer_phone=user["phone"],
-        service_category=order["category"],
-        service_code=order["service_code"],
-        service_name=order["service_name"],
-        address=order.get("address"),
-        latitude=order.get("latitude"),
-        longitude=order.get("longitude"),
-        description=order.get("description"),
-        requested_time=order.get("requested_time"),
-        base_price=order["base_price"],
-        discount=order.get("discount", 0),
-        total_price=order["total_price"],
-        coupon_code=order.get("coupon_code"),
-    )
-
-    if order.get("coupon_code"):
-        await use_coupon(
-            order["coupon_code"]
-        )
-
-    saved = await get_order(order_id)
-
-    await query.edit_message_text(
-        "✅ <b>BUYURTMA YUBORILDI!</b>\n\n"
-        f"🆔 #{order_id}\n"
-        "⏳ Holat: Kutilmoqda\n\n"
-        "🤖 Tizim hozir usta qidirmoqda...",
-        parse_mode=ParseMode.HTML,
-    )
-
-    context.user_data.pop("order", None)
-
-    await dispatch_order(
-        context,
-        saved,
-    )
-
-
-# ============================================================
-# DISPATCH ORDER
-# ============================================================
-
-async def dispatch_order(context, order):
-
-    masters = await find_available_masters(
-        order["service_category"],
-        order["latitude"],
-        order["longitude"],
-    )
-
-    if not masters:
-
-        if MASTERS_GROUP_ID:
-            await context.bot.send_message(
-                MASTERS_GROUP_ID,
-                "🚨 <b>YANGI BUYURTMA</b>\n\n"
-                + format_order(order),
-                parse_mode=ParseMode.HTML,
-            )
-
-        await context.bot.send_message(
-            order["customer_id"],
-            "⏳ Buyurtmangiz qabul qilindi.\n"
-            "Hozircha bo'sh usta topilmadi.\n"
-            "Dispatcher siz bilan bog'lanadi.",
-        )
-
-        return
-
-    # Eng yaxshi birinchi usta
-    master = masters[0]
-
-    await assign_master(
-        order["id"],
-        master,
-    )
-
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "✅ Qabul qilish",
-                callback_data=f"accept:{order['id']}",
-            ),
-            InlineKeyboardButton(
-                "❌ Rad etish",
-                callback_data=f"reject:{order['id']}",
-            ),
-        ]
-    ])
-
-    await context.bot.send_message(
-        master["telegram_id"],
-        "🔔 <b>YANGI BUYURTMA!</b>\n\n"
-        + format_order(order)
-        + "\n"
-        "Siz buyurtmani qabul qilasizmi?",
-        parse_mode=ParseMode.HTML,
-        reply_markup=keyboard,
-    )
-
-    # Masters group
-    if MASTERS_GROUP_ID:
+    await state.clear()
+    await callback.answer()
+
+    # If role is "usta", add to masters table
+    if role == "usta":
+        db.add_master(user_id, full_name, phone, "Elektr", 50000, "Andijon shahar", "08:00", "18:00", 0)
+
+    # Notify admin
+    for admin_id in ADMIN_IDS:
         try:
-            await context.bot.send_message(
-                MASTERS_GROUP_ID,
-                "📨 <b>Ustaga taklif yuborildi</b>\n\n"
-                + format_order(order),
-                parse_mode=ParseMode.HTML,
+            await bot.send_message(
+                admin_id,
+                f"🆕 Yangi foydalanuvchi ro'yxatdan o'tdi!\n"
+                f"👤 {full_name}\n"
+                f"📞 {phone}\n"
+                f"🎭 Rol: {role}\n"
+                f"🆔 {user_id}"
             )
-        except Exception as e:
-            logger.warning(
-                "Masters group error: %s",
-                e,
-            )
-
-
-# ============================================================
-# MASTER ACCEPT
-# ============================================================
-
-async def master_accept_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    order_id = int(
-        query.data.split(":")[1]
-    )
-
-    order = await get_order(order_id)
-
-    if not order:
-        await query.answer(
-            "Buyurtma topilmadi.",
-            show_alert=True,
-        )
-        return
-
-    if order["status"] not in (
-        STATUS_WAITING,
-        STATUS_OFFERED,
-    ):
-        await query.answer(
-            "Bu buyurtma allaqachon qabul qilingan.",
-            show_alert=True,
-        )
-        return
-
-    master = await get_user(
-        update.effective_user.id
-    )
-
-    if master["role"] != ROLE_MASTER:
-        await query.answer(
-            "Siz usta sifatida ro'yxatdan o'tmagansiz.",
-            show_alert=True,
-        )
-        return
-
-    async with db_pool.acquire() as conn:
-
-        await conn.execute("""
-            UPDATE orders
-            SET
-                master_id=$1,
-                master_name=$2,
-                master_phone=$3,
-                status=$4,
-                accepted_at=NOW(),
-                updated_at=NOW()
-            WHERE id=$5
-        """,
-            master["telegram_id"],
-            master["full_name"],
-            master["phone"],
-            STATUS_ACCEPTED,
-            order_id,
-        )
-
-        await conn.execute("""
-            INSERT INTO order_history
-            (
-                order_id,
-                actor_id,
-                actor_name,
-                old_status,
-                new_status,
-                note
-            )
-            VALUES ($1,$2,$3,$4,$5,$6)
-        """,
-            order_id,
-            master["telegram_id"],
-            master["full_name"],
-            order["status"],
-            STATUS_ACCEPTED,
-            "Usta buyurtmani qabul qildi",
-        )
-
-    await query.edit_message_text(
-        "✅ <b>BUYURTMA QABUL QILINDI!</b>\n\n"
-        "🚗 Yetib borish vaqtini tanlang:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "🔴 15 daqiqa",
-                    callback_data=f"arrival:{order_id}:15",
-                ),
-                InlineKeyboardButton(
-                    "🟡 30 daqiqa",
-                    callback_data=f"arrival:{order_id}:30",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🟢 45 daqiqa",
-                    callback_data=f"arrival:{order_id}:45",
-                ),
-                InlineKeyboardButton(
-                    "🟢 60 daqiqa",
-                    callback_data=f"arrival:{order_id}:60",
-                ),
-            ],
-        ]),
-    )
-
-    await context.bot.send_message(
-        order["customer_id"],
-        f"✅ <b>Buyurtma #{order_id} qabul qilindi!</b>\n\n"
-        f"👨‍🔧 Usta: {master['full_name']}\n"
-        "🚗 Usta yetib borish vaqtini belgilamoqda.",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# MASTER REJECT
-# ============================================================
-
-async def master_reject_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    order_id = int(
-        query.data.split(":")[1]
-    )
-
-    order = await get_order(order_id)
-
-    if not order:
-        return
-
-    await update_order_status(
-        order_id,
-        STATUS_REJECTED,
-        update.effective_user.id,
-        update.effective_user.full_name,
-        "Usta buyurtmani rad etdi",
-    )
-
-    await query.edit_message_text(
-        "❌ Buyurtma rad etildi.\n"
-        "🤖 Tizim boshqa usta qidirmoqda..."
-    )
-
-    await redispatch_order(
-        context,
-        order_id,
-    )
-
-
-async def redispatch_order(context, order_id):
-
-    order = await get_order(order_id)
-
-    if not order:
-        return
-
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            UPDATE orders
-            SET status='waiting',
-                master_id=NULL,
-                master_name=NULL,
-                master_phone=NULL,
-                updated_at=NOW()
-            WHERE id=$1
-        """, order_id)
-
-    await dispatch_order(
-        context,
-        await get_order(order_id),
-    )
-
-
-# ============================================================
-# ARRIVAL
-# ============================================================
-
-async def arrival_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    _, order_id, minutes = query.data.split(":")
-
-    order_id = int(order_id)
-    minutes = int(minutes)
-
-    order = await get_order(order_id)
-
-    if not order:
-        return
-
-    async with db_pool.acquire() as conn:
-
-        await conn.execute("""
-            UPDATE orders
-            SET
-                arrival_minutes=$1,
-                status=$2,
-                updated_at=NOW()
-            WHERE id=$3
-        """,
-            minutes,
-            STATUS_ON_WAY,
-            order_id,
-        )
-
-        await conn.execute("""
-            INSERT INTO order_history
-            (
-                order_id,
-                actor_id,
-                actor_name,
-                old_status,
-                new_status,
-                note
-            )
-            VALUES ($1,$2,$3,$4,$5,$6)
-        """,
-            order_id,
-            update.effective_user.id,
-            update.effective_user.full_name,
-            STATUS_ACCEPTED,
-            STATUS_ON_WAY,
-            f"Yetib borish {minutes} daqiqa",
-        )
-
-    await query.edit_message_text(
-        f"✅ <b>Qabul qilindi!</b>\n\n"
-        f"🚗 Yetib borish: {minutes} daqiqa",
-        parse_mode=ParseMode.HTML,
-    )
-
-    await context.bot.send_message(
-        order["customer_id"],
-        f"🚗 <b>Usta yo'lda!</b>\n\n"
-        f"👨‍🔧 {order['master_name']}\n"
-        f"⏱ Taxminan {minutes} daqiqada yetib boradi.",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# MASTER START WORK
-# ============================================================
-
-async def start_work_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    order_id = int(
-        query.data.split(":")[1]
-    )
-
-    order = await get_order(order_id)
-
-    if not order:
-        return
-
-    if order["master_id"] != update.effective_user.id:
-        await query.answer(
-            "Bu buyurtma sizga tegishli emas.",
-            show_alert=True,
-        )
-        return
-
-    async with db_pool.acquire() as conn:
-
-        await conn.execute("""
-            UPDATE orders
-            SET
-                status=$1,
-                started_at=NOW(),
-                updated_at=NOW()
-            WHERE id=$2
-        """,
-            STATUS_STARTED,
-            order_id,
-        )
-
-        await conn.execute("""
-            INSERT INTO order_history
-            (
-                order_id,
-                actor_id,
-                actor_name,
-                old_status,
-                new_status,
-                note
-            )
-            VALUES ($1,$2,$3,$4,$5,$6)
-        """,
-            order_id,
-            update.effective_user.id,
-            update.effective_user.full_name,
-            order["status"],
-            STATUS_STARTED,
-            "Usta ishni boshladi",
-        )
-
-    await query.edit_message_text(
-        "🔧 <b>ISH BOSHLANDI!</b>\n\n"
-        f"🆔 #{order_id}\n"
-        "⏳ Holat: Jarayonda",
-        parse_mode=ParseMode.HTML,
-    )
-
-    await context.bot.send_message(
-        order["customer_id"],
-        f"🔧 <b>Usta ishni boshladi!</b>\n\n"
-        f"🆔 Buyurtma #{order_id}\n"
-        f"👨‍🔧 Usta: {order['master_name']}",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# MASTER FINISH
-# ============================================================
-
-async def finish_work_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    order_id = int(
-        query.data.split(":")[1]
-    )
-
-    order = await get_order(order_id)
-
-    if not order:
-        return
-
-    if order["master_id"] != update.effective_user.id:
-        return
-
-    await query.edit_message_text(
-        "🏁 <b>Ishni yakunlash</b>\n\n"
-        f"🆔 #{order_id}\n"
-        f"💰 To'lov: {float(order['total_price']):,.0f} so'm\n\n"
-        "Tasdiqlaysizmi?",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "✅ Yakunlash",
-                    callback_data=f"finishconfirm:{order_id}",
-                ),
-                InlineKeyboardButton(
-                    "⬅️ Bekor",
-                    callback_data=f"finishcancel:{order_id}",
-                ),
-            ]
-        ]),
-    )
-
-
-async def finish_confirm_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    order_id = int(
-        query.data.split(":")[1]
-    )
-
-    order = await get_order(order_id)
-
-    if not order:
-        return
-
-    async with db_pool.acquire() as conn:
-
-        await conn.execute("""
-            UPDATE orders
-            SET
-                status=$1,
-                completed_at=NOW(),
-                updated_at=NOW()
-            WHERE id=$2
-        """,
-            STATUS_COMPLETED,
-            order_id,
-        )
-
-        await conn.execute("""
-            UPDATE users
-            SET
-                completed_orders=completed_orders+1,
-                updated_at=NOW()
-            WHERE telegram_id=$1
-        """,
-            order["master_id"],
-        )
-
-        await conn.execute("""
-            INSERT INTO order_history
-            (
-                order_id,
-                actor_id,
-                actor_name,
-                old_status,
-                new_status,
-                note
-            )
-            VALUES ($1,$2,$3,$4,$5,$6)
-        """,
-            order_id,
-            update.effective_user.id,
-            update.effective_user.full_name,
-            order["status"],
-            STATUS_COMPLETED,
-            "Ish tugallandi",
-        )
-
-    await query.edit_message_text(
-        "✅ <b>ISH YAKUNLANDI!</b>",
-        parse_mode=ParseMode.HTML,
-    )
-
-    await context.bot.send_message(
-        order["customer_id"],
-        f"🏁 <b>Buyurtma #{order_id} tugallandi!</b>\n\n"
-        f"👨‍🔧 Usta: {order['master_name']}\n"
-        f"💰 Summa: {float(order['total_price']):,.0f} so'm\n\n"
-        "⭐ Ustaga baho bering.",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "⭐ Reyting berish",
-                    callback_data=f"rating:{order_id}",
-                )
-            ]
-        ]),
-    )
-
-
-# ============================================================
-# PAYMENT
-# ============================================================
-
-async def payment_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    order_id = int(
-        query.data.split(":")[1]
-    )
-
-    order = await get_order(order_id)
-
-    if not order:
-        return
-
-    await query.edit_message_text(
-        f"💳 <b>TO'LOV</b>\n\n"
-        f"🆔 #{order_id}\n"
-        f"💰 {float(order['total_price']):,.0f} so'm\n\n"
-        "To'lov turini tanlang:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "💵 Naqd",
-                    callback_data=f"pay:cash:{order_id}",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "💳 Click",
-                    callback_data=f"pay:click:{order_id}",
-                ),
-                InlineKeyboardButton(
-                    "💳 Payme",
-                    callback_data=f"pay:payme:{order_id}",
-                ),
-            ],
-        ]),
-    )
-
-
-async def pay_method_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    _, method, order_id = query.data.split(":")
-
-    order_id = int(order_id)
-
-    if method == "cash":
-
-        async with db_pool.acquire() as conn:
-            await conn.execute("""
-                UPDATE orders
-                SET
-                    payment_method='cash',
-                    payment_status='pending',
-                    updated_at=NOW()
-                WHERE id=$1
-            """, order_id)
-
-        await query.edit_message_text(
-            "💵 <b>Naqd to'lov</b>\n\n"
-            "To'lovni ustaga berishingiz mumkin.\n"
-            "Usta to'lovni tasdiqlaydi.",
-            parse_mode=ParseMode.HTML,
-        )
-
-        order = await get_order(order_id)
-
-        if order:
-            try:
-                await context.bot.send_message(
-                    order["master_id"],
-                    f"💵 Mijoz #{order_id} uchun "
-                    "naqd to'lov tanladi."
-                )
-            except Exception:
-                pass
-
-        return
-
-    # Real provider API ulanmaguncha
-    # to'lov "paid" qilinmaydi.
-    await query.edit_message_text(
-        "💳 <b>Онлайн тўлов</b>\n\n"
-        f"{method.upper()} интеграцияси ҳали API калитлари билан "
-        "уланмаган.\n\n"
-        "Ҳозирча тўловни устадан ёки админдан тасдиқлатиш мумкин.",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# RATING
-# ============================================================
-
-async def rating_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    order_id = int(
-        query.data.split(":")[1]
-    )
-
-    context.user_data["rating_order_id"] = order_id
-
-    buttons = []
-
-    for i in range(1, 6):
-        buttons.append(
-            InlineKeyboardButton(
-                "⭐" * i,
-                callback_data=f"stars:{order_id}:{i}",
-            )
-        )
-
-    await query.edit_message_text(
-        "⭐ <b>USTAGA BAHO BERING</b>\n\n"
-        "Necha yulduz berasiz?",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup([
-            buttons
-        ]),
-    )
-
-
-async def stars_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    _, order_id, stars = query.data.split(":")
-
-    context.user_data["rating_order_id"] = int(
-        order_id
-    )
-    context.user_data["rating_stars"] = int(
-        stars
-    )
-
-    await query.edit_message_text(
-        f"⭐ Siz {stars} yulduz tanladingiz.\n\n"
-        "📝 Sharhingizni yozing.\n"
-        "Agar sharh yozishni istamasangiz: `-`",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-    return C_REVIEW
-
-
-async def receive_review(update, context):
-
-    review = update.message.text.strip()
-
-    if review == "-":
-        review = ""
-
-    order_id = context.user_data.get(
-        "rating_order_id"
-    )
-    stars = context.user_data.get(
-        "rating_stars"
-    )
-
-    if not order_id or not stars:
-        return
-
-    order = await get_order(order_id)
-
-    if not order:
-        return
-
-    saved = await save_rating(
-        order_id,
-        update.effective_user.id,
-        order["master_id"],
-        stars,
-        review,
-    )
-
-    if saved:
-        await update.message.reply_text(
-            f"✅ <b>Sharh yuborildi!</b>\n\n"
-            f"⭐ Bahongiz: {stars}\n"
-            "🎁 Sizga 10 bonus ball berildi.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=main_menu(),
-        )
-
-        try:
-            await context.bot.send_message(
-                order["master_id"],
-                f"⭐ Siz yangi baho oldingiz!\n\n"
-                f"Buyurtma: #{order_id}\n"
-                f"Bahosi: {'⭐' * stars}\n"
-                f"Sharh: {review or '-'}"
-            )
-        except Exception:
+        except:
             pass
 
-    context.user_data.pop(
-        "rating_order_id",
-        None,
-    )
-    context.user_data.pop(
-        "rating_stars",
-        None,
-    )
+# ---------- MAIN MENU HANDLERS ----------
 
-
-# ============================================================
-# MY ORDERS
-# ============================================================
-
-async def my_orders(update, context):
-
-    orders = await get_customer_orders(
-        update.effective_user.id
+@dp.message(F.text == "🚪 Chiqish")
+async def logout_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "🚪 Siz chiqdingiz. Qayta boshlash uchun /start bosing.",
+        reply_markup=ReplyKeyboardRemove()
     )
 
-    if not orders:
-        await update.message.reply_text(
-            "📋 Sizda hali buyurtmalar yo'q."
+@dp.message(F.text == "🏠 Bosh menyu")
+async def home_cmd(message: Message):
+    user_id = message.from_user.id
+    role = db.get_user_role(user_id) or "mijoz"
+    await message.answer(
+        TEXTS["uz"]["main_menu"],
+        reply_markup=get_main_keyboard(role)
+    )
+
+@dp.message(F.text == "⬅️ Orqaga")
+async def back_cmd(message: Message):
+    user_id = message.from_user.id
+    role = db.get_user_role(user_id) or "mijoz"
+    await message.answer(
+        TEXTS["uz"]["main_menu"],
+        reply_markup=get_main_keyboard(role)
+    )
+
+# ---------- DISPETCHER ----------
+
+@dp.message(F.text == "📞 Dispetcher")
+async def dispetcher_cmd(message: Message):
+    user_id = message.from_user.id
+
+    # Save contact to user
+    db.add_user(user_id, message.from_user.first_name, "", "mijoz")
+
+    await message.answer(
+        f"📞 <b>DISPETCHER:</b>\n"
+        f"📱 <code>{DISPETCHER_PHONE}</code>\n\n"
+        f"🕐 <b>Ish vaqti:</b> 24/7 – KUTISH YO'Q!\n"
+        f"🚨 <b>Shosilingch holatda:</b> Daro'x yordam!\n\n"
+        f"📋 <b>Dispetcher vazifalari:</b>\n"
+        f"├── 📞 Mijoz va ustalarni bog'lash\n"
+        f"├── 🚨 24/7 shosilingch holatlarni boshqarish\n"
+        f"├── 📋 Zakazlarni nazorat qilish\n"
+        f"└── 👨‍🔧 Yangi ustalarni qabul qilish\n\n"
+        f"[📞 Qo'ng'iroq qilish] – telefonda bosing!\n"
+        f"[💬 Xabar yuborish] – @usta24_bot orqali yozing!",
+        reply_markup=get_inline_keyboard([
+            ("📞 Qo'ng'iroq", "call_dispetcher"),
+            ("💬 Xabar", "chat_dispetcher")
+        ])
+    )
+
+@dp.callback_query(F.data == "call_dispetcher")
+async def call_dispetcher(callback: CallbackQuery):
+    await callback.answer(f"📞 {DISPETCHER_PHONE} raqamiga qo'ng'iroq qilish...")
+    # Telegram does not support direct calls, but we show the number
+    await callback.message.answer(
+        f"📞 <b>Dispetcher raqami:</b>\n<code>{DISPETCHER_PHONE}</code>\n\n"
+        f"🕐 24/7 ishlaydi! KUTISH YO'Q!"
+    )
+
+@dp.callback_query(F.data == "chat_dispetcher")
+async def chat_dispetcher(callback: CallbackQuery):
+    await callback.message.answer(
+        f"💬 <b>Dispetcher bilan bog'lanish:</b>\n\n"
+        f"📱 <code>{DISPETCHER_PHONE}</code>\n\n"
+        f"📨 Xabaringizni yozing, men Dispetcherga yetkazaman!\n"
+        f"(Yoki bevosita telefonga yozing: @usta24_bot)"
+    )
+    await callback.answer()
+
+# ---------- 24/7 URGENT REJIM ----------
+
+@dp.message(F.text == "🚨 24/7 Shosilinch rejim")
+async def urgent_cmd(message: Message, state: FSMContext):
+    await message.answer(
+        "🚨 <b>24/7 SHOSILINCH REJIM – KUTISH YO'Q!</b>\n\n"
+        "⚡ <b>Dolzarb holatni tanlang:</b>",
+        reply_markup=get_inline_keyboard([
+            ("💧 Suv tўхtab qoldi", "urgent_water"),
+            ("⚡ Elektr ўчиб қолди", "urgent_electric"),
+            ("🔥 Газ оқаётган", "urgent_gas"),
+            ("🚪 Эшик синиб қолди", "urgent_door"),
+            ("🚰 Қувур ёрилган", "urgent_pipe"),
+            ("❓ Бошқа", "urgent_other")
+        ])
+    )
+    await state.set_state(UrgentState.waiting_issue_type)
+
+@dp.callback_query(UrgentState.waiting_issue_type)
+async def urgent_issue(callback: CallbackQuery, state: FSMContext):
+    issue_map = {
+        "urgent_water": "💧 Suv tўхtab qoldi",
+        "urgent_electric": "⚡ Elektr ўчиб қолди",
+        "urgent_gas": "🔥 Газ оқаётган",
+        "urgent_door": "🚪 Эшик синиб қолди",
+        "urgent_pipe": "🚰 Қувур ёрилган",
+        "urgent_other": "❓ Бошқа"
+    }
+
+    issue = issue_map.get(callback.data, "❓ Бошқа")
+    await state.update_data(issue_type=issue)
+
+    await callback.message.edit_text(
+        f"📝 <b>Muammo haqida qo'shimcha ma'lumot:</b>\n\n"
+        f"⚡ {issue}\n\n"
+        f"📝 Iltimos, muammoni batafsil tasvirlang:"
+    )
+    await state.set_state(UrgentState.waiting_description)
+    await callback.answer()
+
+@dp.message(UrgentState.waiting_description)
+async def urgent_description(message: Message, state: FSMContext):
+    await state.update_data(description=message.text)
+    await message.answer(
+        "📍 Iltimos, joylashuvingizni yuboring:\n\n"
+        "📤 Geolokatsiya yuborish tugmasini bosing!\n"
+        "✏️ Yoki manzilni matn bilan yozing.",
+        reply_markup=get_inline_keyboard([
+            ("📍 Geolokatsiya", "urgent_location"),
+            ("✏️ Matn bilan", "urgent_text")
+        ])
+    )
+    await state.set_state(UrgentState.waiting_location)
+
+@dp.callback_query(UrgentState.waiting_location)
+async def urgent_location_type(callback: CallbackQuery, state: FSMContext):
+    if callback.data == "urgent_location":
+        await callback.message.edit_text(
+            "📍 <b>Geolokatsiyangizni yuboring!</b>\n\n"
+            "📎 Ilovadagi 📍 tugmasini bosing!"
         )
-        return
-
-    for order in orders[:10]:
-
-        buttons = []
-
-        if order["status"] == STATUS_COMPLETED:
-            buttons.append([
-                InlineKeyboardButton(
-                    "💳 To'lov",
-                    callback_data=f"payment:{order['id']}",
-                ),
-                InlineKeyboardButton(
-                    "⭐ Reyting",
-                    callback_data=f"rating:{order['id']}",
-                ),
-            ])
-
-        if order["status"] in (
-            STATUS_ACCEPTED,
-            STATUS_ON_WAY,
-            STATUS_STARTED,
-        ):
-            buttons.append([
-                InlineKeyboardButton(
-                    "💬 Usta bilan chat",
-                    callback_data=f"chat:{order['id']}",
-                )
-            ])
-
-        await update.message.reply_text(
-            format_order(order),
-            parse_mode=ParseMode.HTML,
-            reply_markup=(
-                InlineKeyboardMarkup(buttons)
-                if buttons
-                else None
-            ),
-        )
-
-
-# ============================================================
-# CHAT
-# ============================================================
-
-async def chat_callback(update, context):
-
-    query = update.callback_query
-    await query.answer()
-
-    order_id = int(
-        query.data.split(":")[1]
-    )
-
-    order = await get_order(order_id)
-
-    if not order:
-        return
-
-    if update.effective_user.id not in (
-        order["customer_id"],
-        order["master_id"],
-    ):
-        return
-
-    context.user_data["chat_order_id"] = order_id
-
-    await query.message.reply_text(
-        "💬 <b>Chat</b>\n\n"
-        "Xabaringizni yozing.\n"
-        "Xabar boshqa ishtirokchiga yuboriladi.\n\n"
-        "Chiqish: /stopchat",
-        parse_mode=ParseMode.HTML,
-    )
-
-    return C_CHAT
-
-
-async def receive_chat(update, context):
-
-    order_id = context.user_data.get(
-        "chat_order_id"
-    )
-
-    if not order_id:
-        return
-
-    order = await get_order(order_id)
-
-    if not order:
-        return
-
-    sender_id = update.effective_user.id
-
-    if sender_id == order["customer_id"]:
-        receiver_id = order["master_id"]
-    elif sender_id == order["master_id"]:
-        receiver_id = order["customer_id"]
+        await state.set_state(UrgentState.waiting_location)
     else:
-        return
+        await callback.message.edit_text(
+            "✏️ <b>Manzilingizni yozing:</b>"
+        )
+        await state.set_state(UrgentState.waiting_location)
+    await callback.answer()
 
-    text = update.message.text
+@dp.message(UrgentState.waiting_location)
+async def urgent_location_photo(message: Message, state: FSMContext):
+    if message.location:
+        lat = message.location.latitude
+        lon = message.location.longitude
+        await state.update_data(latitude=lat, longitude=lon, address="")
+    else:
+        await state.update_data(address=message.text, latitude=0, longitude=0)
 
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO messages
-            (
-                order_id,
-                sender_id,
-                receiver_id,
-                message
+    await message.answer(
+        "📸 <b>Muammo rasmini yuboring (ixtiyoriy):</b>\n\n"
+        "🖼 Rasm yuborish yoki ⏭ O'tkazib yuborish",
+        reply_markup=get_inline_keyboard([
+            ("⏭ O'tkazib yuborish", "urgent_skip_photo")
+        ])
+    )
+    await state.set_state(UrgentState.waiting_photo)
+
+@dp.message(UrgentState.waiting_photo)
+async def urgent_photo(message: Message, state: FSMContext):
+    photo_id = ""
+    if message.photo:
+        photo_id = message.photo[-1].file_id
+
+    await state.update_data(photo=photo_id)
+    await complete_urgent_request(message, state)
+
+@dp.callback_query(F.data == "urgent_skip_photo")
+async def urgent_skip_photo(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(photo="")
+    await callback.message.edit_text("⏭ Rasm o'tkazib yuborildi")
+    await complete_urgent_request(callback.message, state)
+    await callback.answer()
+
+async def complete_urgent_request(message: Message, state: FSMContext):
+    data = await state.get_data()
+    user_id = message.from_user.id
+    user = db.get_user(user_id)
+
+    # Create order
+    order_id, order_num = db.create_order(
+        user_id=user_id,
+        service="24/7 Shosilingch",
+        sub_service=data.get("issue_type", "Boshqa"),
+        description=data.get("description", ""),
+        address=data.get("address", "Geolokatsiya orqali"),
+        lat=data.get("latitude", 0),
+        lon=data.get("longitude", 0),
+        time_slot="Hozir",
+        price=0,
+        photo=data.get("photo", ""),
+        comment="🚨 24/7 SHOSILINCH!",
+        is_urgent=1
+    )
+
+    # Add urgent request
+    db.add_urgent_request(
+        user_id=user_id,
+        order_id=order_id,
+        issue_type=data.get("issue_type", "Boshqa"),
+        description=data.get("description", ""),
+        lat=data.get("latitude", 0),
+        lon=data.get("longitude", 0)
+    )
+
+    # Send to group
+    try:
+        await bot.send_message(
+            GROUP_ID,
+            f"🚨 <b>24/7 SHOSILINCH BUYURTMA!</b>\n\n"
+            f"🆔 {order_num}\n"
+            f"⚡ Muammo: {data.get('issue_type', 'Boshqa')}\n"
+            f"👤 Mijoz: {user[1] if user else 'Noma'lum'}\n"
+            f"📞 {user[2] if user else ''}\n"
+            f"📍 {data.get('address', 'Geolokatsiya orqali')}\n"
+            f"📝 {data.get('description', '')}\n"
+            f"🚨 <b>KUTISH YO'Q! DARO'X YORDAM!</b>\n\n"
+            f"[✅ QABUL QILISH]  [❌ RAD ETISH]",
+            reply_markup=get_order_status_keyboard(order_id)
+        )
+    except:
+        pass
+
+    # Notify admin
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                admin_id,
+                f"🚨 <b>24/7 SHOSILINCH BUYURTMA!</b>\n"
+                f"🆔 {order_num}\n"
+                f"⚡ {data.get('issue_type', 'Boshqa')}\n"
+                f"👤 {user[1] if user else 'Noma'lum'}\n"
+                f"📞 {user[2] if user else ''}\n"
+                f"📍 {data.get('address', 'Geolokatsiya orqali')}"
             )
-            VALUES ($1,$2,$3,$4)
-        """,
-            order_id,
-            sender_id,
-            receiver_id,
-            text,
+        except:
+            pass
+
+    await message.answer(
+        f"🚨 <b>SHOSILINCH SO'ROV YUBORILDI!</b>\n\n"
+        f"🆔 {order_num}\n"
+        f"⚡ <b>Tez orada usta keladi!</b>\n"
+        f"🕐 Kutilgan vaqt: 10-15 daqiqa\n"
+        f"💸 <b>Tўlov:</b> Faqat naqd pul! Ishdan keyin!\n"
+        f"🔴 <b>Kechki vaqt:</b> 20% ustama\n\n"
+        f"📞 Dispetcher: <code>{DISPETCHER_PHONE}</code>"
+    )
+
+    await state.clear()
+
+# ---------- ORDER CREATION ----------
+
+@dp.message(F.text == "🛒 Buyurtma berish")
+async def order_start(message: Message, state: FSMContext):
+    await message.answer(
+        TEXTS["uz"]["choose_service"],
+        reply_markup=get_inline_keyboard([
+            ("🛠 Sanitariya", "service_sanitariya"),
+            ("⚡ Elektr", "service_elektr"),
+            ("🔧 Mexanik", "service_mexanik"),
+            ("🧹 Tozalash", "service_tozalash"),
+            ("📦 Yuk", "service_yuk"),
+            ("❓ Boshqa", "service_boshqa")
+        ])
+    )
+    await state.set_state(OrderState.waiting_service)
+
+@dp.callback_query(OrderState.waiting_service)
+async def order_service(callback: CallbackQuery, state: FSMContext):
+    service = callback.data.replace("service_", "")
+    await state.update_data(service=service)
+
+    sub_services = {
+        "sanitariya": ["🚽 Hojatxona", "🚿 Lavabo", "🔧 Quvur", "🧹 Kanalizatsiya", "📋 Boshqa"],
+        "elektr": ["💡 Chiroq", "🔌 Rozetka", "🔧 Sim", "⚡ Avtomat", "📋 Boshqa"],
+        "mexanik": ["🚪 Eshik", "🪟 Deraza", "🪑 Mebel", "❄️ Konditsioner", "📋 Boshqa"],
+        "tozalash": ["🏠 Uy", "🏢 Ofis", "🧶 Gilam", "🪟 Deraza", "📋 Boshqa"],
+        "yuk": ["📦 Kichik", "📦 O'rta", "📦 Katta", "📋 Boshqa"],
+        "boshqa": ["📋 Boshqa xizmat"]
+    }
+
+    buttons = [(item, f"sub_{item}") for item in sub_services.get(service, ["📋 Boshqa"])]
+
+    await callback.message.edit_text(
+        f"📋 <b>{service.title()} xizmatini tanlang:</b>",
+        reply_markup=get_inline_keyboard(buttons)
+    )
+    await state.set_state(OrderState.waiting_sub_service)
+    await callback.answer()
+
+@dp.callback_query(OrderState.waiting_sub_service)
+async def order_sub_service(callback: CallbackQuery, state: FSMContext):
+    sub_service = callback.data.replace("sub_", "")
+    await state.update_data(sub_service=sub_service)
+
+    await callback.message.edit_text(TEXTS["uz"]["ask_name"])
+    await state.set_state(OrderState.waiting_name)
+    await callback.answer()
+
+@dp.message(OrderState.waiting_name)
+async def order_name(message: Message, state: FSMContext):
+    if len(message.text) < 2:
+        await message.answer("❌ Iltimos, ismingizni to'g'ri kiriting:")
+        return
+    await state.update_data(name=message.text)
+    await message.answer(TEXTS["uz"]["ask_phone"])
+    await state.set_state(OrderState.waiting_phone)
+
+@dp.message(OrderState.waiting_phone)
+async def order_phone(message: Message, state: FSMContext):
+    await state.update_data(phone=message.text)
+    await message.answer(
+        TEXTS["uz"]["enter_address"],
+        reply_markup=get_inline_keyboard([
+            ("📍 Geolokatsiya", "address_location"),
+            ("✏️ Matn bilan", "address_text")
+        ])
+    )
+    await state.set_state(OrderState.waiting_address)
+
+@dp.callback_query(OrderState.waiting_address)
+async def order_address_type(callback: CallbackQuery, state: FSMContext):
+    if callback.data == "address_location":
+        await callback.message.edit_text(
+            "📍 <b>Geolokatsiyangizni yuboring!</b>\n\n"
+            "📎 Ilovadagi 📍 tugmasini bosing!"
         )
+        await state.set_state(OrderState.waiting_address)
+    else:
+        await callback.message.edit_text(
+            "✏️ <b>Manzilingizni yozing:</b>"
+        )
+        await state.set_state(OrderState.waiting_address)
+    await callback.answer()
 
-    await context.bot.send_message(
-        receiver_id,
-        f"💬 <b>Buyurtma #{order_id}</b>\n\n"
-        f"{update.effective_user.full_name}:\n"
-        f"{text}",
-        parse_mode=ParseMode.HTML,
+@dp.message(OrderState.waiting_address)
+async def order_address(message: Message, state: FSMContext):
+    if message.location:
+        lat = message.location.latitude
+        lon = message.location.longitude
+        await state.update_data(latitude=lat, longitude=lon, address="Geolokatsiya orqali")
+    else:
+        await state.update_data(address=message.text, latitude=0, longitude=0)
+
+    await message.answer(
+        TEXTS["uz"]["send_photo"],
+        reply_markup=get_inline_keyboard([
+            ("⏭ O'tkazib yuborish", "order_skip_photo")
+        ])
+    )
+    await state.set_state(OrderState.waiting_photo)
+
+@dp.message(OrderState.waiting_photo)
+async def order_photo(message: Message, state: FSMContext):
+    photo_id = ""
+    if message.photo:
+        photo_id = message.photo[-1].file_id
+    await state.update_data(photo=photo_id)
+
+    await message.answer(
+        TEXTS["uz"]["send_video"],
+        reply_markup=get_inline_keyboard([
+            ("⏭ O'tkazib yuborish", "order_skip_video")
+        ])
+    )
+    await state.set_state(OrderState.waiting_video)
+
+@dp.callback_query(F.data == "order_skip_photo")
+async def order_skip_photo(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(photo="")
+    await callback.message.edit_text("⏭ Rasm o'tkazib yuborildi")
+
+    await callback.message.answer(
+        TEXTS["uz"]["send_video"],
+        reply_markup=get_inline_keyboard([
+            ("⏭ O'tkazib yuborish", "order_skip_video")
+        ])
+    )
+    await state.set_state(OrderState.waiting_video)
+    await callback.answer()
+
+@dp.message(OrderState.waiting_video)
+async def order_video(message: Message, state: FSMContext):
+    video_id = ""
+    if message.video:
+        video_id = message.video.file_id
+    await state.update_data(video=video_id)
+
+    await message.answer(
+        TEXTS["uz"]["enter_comment"],
+        reply_markup=get_inline_keyboard([
+            ("⏭ O'tkazib yuborish", "order_skip_comment")
+        ])
+    )
+    await state.set_state(OrderState.waiting_comment)
+
+@dp.callback_query(F.data == "order_skip_video")
+async def order_skip_video(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(video="")
+    await callback.message.edit_text("⏭ Video o'tkazib yuborildi")
+
+    await callback.message.answer(
+        TEXTS["uz"]["enter_comment"],
+        reply_markup=get_inline_keyboard([
+            ("⏭ O'tkazib yuborish", "order_skip_comment")
+        ])
+    )
+    await state.set_state(OrderState.waiting_comment)
+    await callback.answer()
+
+@dp.message(OrderState.waiting_comment)
+async def order_comment(message: Message, state: FSMContext):
+    await state.update_data(comment=message.text)
+
+    await message.answer(
+        TEXTS["uz"]["choose_time"],
+        reply_markup=get_inline_keyboard([
+            ("🔴 Hozir", "time_now"),
+            ("🟡 Bugun kechqurun", "time_evening"),
+            ("🟢 Ertaga ertalab", "time_morning"),
+            ("📆 Boshqa vaqt", "time_other")
+        ])
+    )
+    await state.set_state(OrderState.waiting_time)
+
+@dp.callback_query(F.data == "order_skip_comment")
+async def order_skip_comment(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(comment="")
+    await callback.message.edit_text("⏭ Izoh o'tkazib yuborildi")
+
+    await callback.message.answer(
+        TEXTS["uz"]["choose_time"],
+        reply_markup=get_inline_keyboard([
+            ("🔴 Hozir", "time_now"),
+            ("🟡 Bugun kechqurun", "time_evening"),
+            ("🟢 Ertaga ertalab", "time_morning"),
+            ("📆 Boshqa vaqt", "time_other")
+        ])
+    )
+    await state.set_state(OrderState.waiting_time)
+    await callback.answer()
+
+@dp.callback_query(OrderState.waiting_time)
+async def order_time(callback: CallbackQuery, state: FSMContext):
+    time_map = {
+        "time_now": "Hozir",
+        "time_evening": "Bugun kechqurun (18:00-22:00)",
+        "time_morning": "Ertaga ertalab (08:00-12:00)",
+        "time_other": "Boshqa vaqt"
+    }
+    time_slot = time_map.get(callback.data, "Hozir")
+    await state.update_data(time_slot=time_slot)
+
+    data = await state.get_data()
+
+    # Calculate price
+    price = 50000  # Default price per hour
+    if data.get("service") == "sanitariya":
+        price = 80000
+    elif data.get("service") == "elektr":
+        price = 50000
+    elif data.get("service") == "mexanik":
+        price = 60000
+    elif data.get("service") == "tozalash":
+        price = 40000
+    elif data.get("service") == "yuk":
+        price = 70000
+
+    # Is it urgent? (Check from state)
+    is_urgent = data.get("is_urgent", 0)
+    if is_urgent:
+        price = int(price * 1.2)  # 20% extra for urgent
+
+    await state.update_data(price=price)
+
+    # Show confirmation
+    confirm_text = (
+        f"📋 <b>Buyurtma ma'lumotlari:</b>\n\n"
+        f"├── 🛠 Xizmat: {data.get('service', '').title()} – {data.get('sub_service', '')}\n"
+        f"├── 👤 Ism: {data.get('name', '')}\n"
+        f"├── 📞 Telefon: {data.get('phone', '')}\n"
+        f"├── 📍 Manzil: {data.get('address', '')}\n"
+        f"├── 📸 Rasm: {'✅' if data.get('photo') else '❌'}\n"
+        f"├── 🎥 Video: {'✅' if data.get('video') else '❌'}\n"
+        f"├── 📝 Izoh: {data.get('comment', "Yo'q")}\n"
+        f"├── 🕐 Vaqt: {time_slot}\n"
+        f"└── 💰 Narx: {price:,} so'm/soat\n\n"
+        f"✅ <b>Tasdiqlaysizmi?</b>"
     )
 
-    await update.message.reply_text(
-        "✅ Xabar yuborildi."
+    if is_urgent:
+        confirm_text += "\n\n🚨 <b>24/7 SHOSILINCH REJIM!</b>"
+
+    await callback.message.edit_text(
+        confirm_text,
+        reply_markup=get_inline_keyboard([
+            ("✅ Tasdiqlash", "confirm_order"),
+            ("❌ Bekor qilish", "cancel_order")
+        ])
     )
+    await state.set_state(OrderState.waiting_confirm)
+    await callback.answer()
 
-
-async def stop_chat(update, context):
-
-    context.user_data.pop(
-        "chat_order_id",
-        None,
-    )
-
-    await update.message.reply_text(
-        "💬 Chat yopildi.",
-        reply_markup=main_menu(),
-    )
-
-
-# ============================================================
-# MASTER MENU
-# ============================================================
-
-async def master_new_orders(update, context):
-
-    if update.effective_user.id == ADMIN_ID:
+@dp.callback_query(OrderState.waiting_confirm)
+async def order_confirm(callback: CallbackQuery, state: FSMContext):
+    if callback.data == "cancel_order":
+        await callback.message.edit_text("❌ Buyurtma bekor qilindi")
+        await state.clear()
+        await callback.answer()
         return
 
-    user = await get_user(
-        update.effective_user.id
+    data = await state.get_data()
+    user_id = callback.from_user.id
+    user = db.get_user(user_id)
+
+    # Create order
+    order_id, order_num = db.create_order(
+        user_id=user_id,
+        service=data.get("service", "Boshqa"),
+        sub_service=data.get("sub_service", ""),
+        description=f"{data.get('service', '')} – {data.get('sub_service', '')}",
+        address=data.get("address", ""),
+        lat=data.get("latitude", 0),
+        lon=data.get("longitude", 0),
+        time_slot=data.get("time_slot", "Hozir"),
+        price=data.get("price", 50000),
+        photo=data.get("photo", ""),
+        video=data.get("video", ""),
+        comment=data.get("comment", ""),
+        is_urgent=data.get("is_urgent", 0)
     )
 
-    if not user or user["role"] != ROLE_MASTER:
-        await update.message.reply_text(
-            "❌ Siz usta sifatida ro'yxatdan o'tmagansiz."
+    await callback.message.edit_text(
+        f"✅ <b>Buyurtma yuborildi!</b>\n\n"
+        f"🆔 {order_num}\n"
+        f"🛠 {data.get('service', '').title()} – {data.get('sub_service', '')}\n"
+        f"💰 Narx: {data.get('price', 50000):,} so'm/soat\n"
+        f"📸 Rasm: {'✅' if data.get('photo') else '❌'}\n\n"
+        f"⏳ Tez orada usta bog'lanadi!"
+    )
+
+    # Send to group
+    try:
+        urgent_text = "🚨 24/7 SHOSILINCH! " if data.get("is_urgent", 0) else ""
+        await bot.send_message(
+            GROUP_ID,
+            f"🆕 {urgent_text}<b>YANGI BUYURTMA!</b>\n\n"
+            f"🆔 {order_num}\n"
+            f"🛠 Xizmat: {data.get('service', '').title()} – {data.get('sub_service', '')}\n"
+            f"👤 Mijoz: {user[1] if user else 'Noma'lum'}\n"
+            f"📞 {user[2] if user else ''}\n"
+            f"📍 {data.get('address', '')}\n"
+            f"📸 Rasm: {'✅' if data.get('photo') else '❌'}\n"
+            f"💰 Narx: {data.get('price', 50000):,} so'm/soat\n"
+            f"🕐 Vaqt: {data.get('time_slot', 'Hozir')}\n"
+            f"📝 {data.get('comment', '')}\n\n"
+            f"[✅ QABUL QILISH]  [❌ RAD ETISH]",
+            reply_markup=get_order_status_keyboard(order_id)
         )
+    except Exception as e:
+        logger.error(f"Error sending to group: {e}")
+
+    # Notify admin
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                admin_id,
+                f"🆕 Yangi buyurtma!\n"
+                f"🆔 {order_num}\n"
+                f"👤 {user[1] if user else 'Noma'lum'}\n"
+                f"📞 {user[2] if user else ''}"
+            )
+        except:
+            pass
+
+    await state.clear()
+    await callback.answer()
+
+# ---------- ORDER STATUS (USTA) ----------
+
+@dp.message(F.text == "📋 Yangi buyurtmalar")
+async def new_orders_cmd(message: Message):
+    orders = db.get_all_orders(status="yangi")
+    if not orders:
+        await message.answer("📭 Hozircha yangi buyurtmalar yo'q")
         return
 
-    orders = await get_waiting_orders()
+    for order in orders[:5]:  # Show last 5
+        await message.answer(
+            f"🆕 <b>Yangi buyurtma</b>\n"
+            f"🆔 {order[1]}\n"
+            f"🛠 {order[3]}\n"
+            f"👤 Mijoz: {db.get_user(order[2])[1] if db.get_user(order[2]) else 'Noma'lum'}\n"
+            f"📍 {order[5]}\n"
+            f"💰 {order[8]:,} so'm/soat\n"
+            f"📸 {'✅ Rasm bor' if order[11] else '❌ Rasm yoq'}\n"
+            f"🕐 {order[9]}\n\n"
+            f"[✅ QABUL QILISH]  [❌ RAD ETISH]",
+            reply_markup=get_order_status_keyboard(order[0])
+        )
+
+# ---------- ORDER ACCEPT/REJECT ----------
+
+@dp.callback_query(F.data.startswith("accept_"))
+async def accept_order(callback: CallbackQuery):
+    order_id = int(callback.data.split("_")[1])
+    master_id = callback.from_user.id
+    master = db.get_master(master_id)
+
+    if not master:
+        await callback.answer("❌ Siz usta sifatida ro'yxatdan o'tmaganiz!")
+        return
+
+    order = db.get_order(order_id)
+    if not order:
+        await callback.answer("❌ Buyurtma topilmadi!")
+        return
+
+    # Update order
+    db.update_order_status(
+        order_id=order_id,
+        status="qabul_qilingan",
+        master_id=master_id,
+        master_name=master[1]
+    )
+
+    # Notify client
+    user_id = order[2]
+    try:
+        await bot.send_message(
+            user_id,
+            f"✅ <b>Buyurtmangiz qabul qilindi!</b>\n\n"
+            f"🆔 {order[1]}\n"
+            f"🛠 {order[3]} – {order[4]}\n"
+            f"👨‍🔧 Usta: {master[1]} (⭐{master[7]:.1f})\n"
+            f"📞 {master[2]}\n"
+            f"⏳ Ish vaqti: {order[9]}\n"
+            f"💰 {order[8]:,} so'm/soat\n\n"
+            f"[📞 Qo'ng'iroq]  [💬 Xabar]",
+            reply_markup=get_inline_keyboard([
+                ("📞 Qo'ng'iroq", f"call_master_{master_id}"),
+                ("💬 Xabar", f"chat_master_{master_id}")
+            ])
+        )
+    except:
+        pass
+
+    # Notify group
+    try:
+        await bot.send_message(
+            GROUP_ID,
+            f"✅ <b>#{order[1]} buyurtmani Usta {master[1]} qabul qildi!</b>"
+        )
+    except:
+        pass
+
+    await callback.message.edit_text(
+        f"✅ <b>Buyurtma qabul qilindi!</b>\n"
+        f"🆔 {order[1]}\n"
+        f"👨‍🔧 {master[1]}"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("reject_"))
+async def reject_order(callback: CallbackQuery):
+    order_id = int(callback.data.split("_")[1])
+    master_id = callback.from_user.id
+    master = db.get_master(master_id)
+
+    order = db.get_order(order_id)
+    if not order:
+        await callback.answer("❌ Buyurtma topilmadi!")
+        return
+
+    # Update order status back to 'yangi' for other masters
+    db.update_order_status(order_id=order_id, status="yangi")
+
+    # Notify client
+    user_id = order[2]
+    try:
+        await bot.send_message(
+            user_id,
+            f"❌ <b>Buyurtmangiz rad etildi</b>\n\n"
+            f"🆔 {order[1]}\n"
+            f"👨‍🔧 Usta: {master[1]}\n"
+            f"🔄 Biz boshqa ustani qidiramiz!\n\n"
+            f"⏳ Iltimos kuting..."
+        )
+    except:
+        pass
+
+    # Notify group - automatic re-posting
+    try:
+        user = db.get_user(order[2])
+        await bot.send_message(
+            GROUP_ID,
+            f"❌ <b>#{order[1]} buyurtmani Usta {master[1]} rad etdi!</b>\n"
+            f"🔄 Boshqa ustalar ko'rib chiqsin!\n\n"
+            f"🆕 <b>YANGI BUYURTMA!</b>\n"
+            f"🆔 {order[1]}\n"
+            f"🛠 {order[3]} – {order[4]}\n"
+            f"👤 Mijoz: {user[1] if user else 'Noma'lum'}\n"
+            f"📍 {order[5]}\n"
+            f"💰 {order[8]:,} so'm/soat\n\n"
+            f"[✅ QABUL QILISH]  [❌ RAD ETISH]",
+            reply_markup=get_order_status_keyboard(order_id)
+        )
+    except:
+        pass
+
+    await callback.message.edit_text(
+        f"❌ <b>Buyurtma rad etildi</b>\n"
+        f"🔄 Boshqa ustalar ko'rib chiqadi..."
+    )
+    await callback.answer()
+
+# ---------- MASTER START WORK ----------
+
+@dp.message(F.text == "✅ Mening faol buyurtmalarim")
+async def my_active_orders(message: Message):
+    user_id = message.from_user.id
+    orders = db.get_master_orders(user_id, "qabul_qilingan")
+    orders += db.get_master_orders(user_id, "jarayonda")
 
     if not orders:
-        await update.message.reply_text(
-            "📭 Hozircha yangi buyurtmalar yo'q."
-        )
+        await message.answer("📭 Sizda faol buyurtmalar yo'q")
         return
 
     for order in orders:
-
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "✅ Qabul qilish",
-                    callback_data=f"accept:{order['id']}",
-                ),
-                InlineKeyboardButton(
-                    "❌ Rad etish",
-                    callback_data=f"reject:{order['id']}",
-                ),
-            ]
-        ])
-
-        await update.message.reply_text(
-            format_order(order),
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard,
+        await message.answer(
+            f"🔧 <b>Faol buyurtma</b>\n"
+            f"🆔 {order[1]}\n"
+            f"🛠 {order[3]} – {order[4]}\n"
+            f"👤 {db.get_user(order[2])[1] if db.get_user(order[2]) else 'Noma'lum'}\n"
+            f"📍 {order[5]}\n"
+            f"💰 {order[8]:,} so'm/soat\n"
+            f"📊 Holat: {order[10]}\n\n"
+            f"📸 {'✅ Rasm bor' if order[11] else '❌ Rasm yoq'}",
+            reply_markup=get_master_order_keyboard(order[0])
         )
 
+@dp.callback_query(F.data.startswith("start_work_"))
+async def start_work(callback: CallbackQuery):
+    order_id = int(callback.data.split("_")[2])
+    order = db.get_order(order_id)
 
-async def master_active_orders(update, context):
-
-    orders = await get_master_orders(
-        update.effective_user.id
-    )
-
-    active = [
-        x for x in orders
-        if x["status"] in (
-            STATUS_ACCEPTED,
-            STATUS_ON_WAY,
-            STATUS_STARTED,
-        )
-    ]
-
-    if not active:
-        await update.message.reply_text(
-            "📭 Faol buyurtmalar yo'q."
-        )
+    if not order:
+        await callback.answer("❌ Buyurtma topilmadi!")
         return
 
-    for order in active:
+    db.update_order_status(order_id=order_id, status="jarayonda")
 
-        buttons = []
-
-        if order["status"] in (
-            STATUS_ACCEPTED,
-            STATUS_ON_WAY,
-        ):
-            buttons.append([
-                InlineKeyboardButton(
-                    "🔧 Ishni boshlash",
-                    callback_data=f"startwork:{order['id']}",
-                )
-            ])
-
-        if order["status"] == STATUS_STARTED:
-            buttons.append([
-                InlineKeyboardButton(
-                    "🏁 Ishni yakunlash",
-                    callback_data=f"finish:{order['id']}",
-                )
-            ])
-
-        buttons.append([
-            InlineKeyboardButton(
-                "💬 Chat",
-                callback_data=f"chat:{order['id']}",
-            )
-        ])
-
-        await update.message.reply_text(
-            format_order(order),
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(
-                buttons
-            ),
-        )
-
-
-async def master_history(update, context):
-
-    orders = await get_master_orders(
-        update.effective_user.id,
-        30,
-    )
-
-    completed = [
-        x for x in orders
-        if x["status"] == STATUS_COMPLETED
-    ]
-
-    if not completed:
-        await update.message.reply_text(
-            "📜 Tarix bo'sh."
-        )
-        return
-
-    for order in completed[:10]:
-        await update.message.reply_text(
-            format_order(order),
-            parse_mode=ParseMode.HTML,
-        )
-
-
-async def master_online(update, context):
-
-    user = await get_user(
-        update.effective_user.id
-    )
-
-    if not user or user["role"] != ROLE_MASTER:
-        return
-
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            UPDATE users
-            SET is_online=TRUE
-            WHERE telegram_id=$1
-        """,
-            update.effective_user.id,
-        )
-
-    await update.message.reply_text(
-        "🟢 Siz ONLINE holatdasiz.\n"
-        "Yangi buyurtmalar kelishi mumkin.",
-        reply_markup=master_menu(),
-    )
-
-
-async def master_offline(update, context):
-
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            UPDATE users
-            SET is_online=FALSE
-            WHERE telegram_id=$1
-        """,
-            update.effective_user.id,
-        )
-
-    await update.message.reply_text(
-        "🔴 Siz OFFLINE holatdasiz.",
-        reply_markup=master_menu(),
-    )
-
-
-async def master_income(update, context):
-
-    async with db_pool.acquire() as conn:
-
-        row = await conn.fetchrow("""
-            SELECT
-                COUNT(*) AS orders_count,
-                COALESCE(
-                    SUM(total_price),
-                    0
-                ) AS total
-            FROM orders
-            WHERE master_id=$1
-              AND status='completed'
-        """,
-            update.effective_user.id,
-        )
-
-    await update.message.reply_text(
-        "💰 <b>DAROMADIM</b>\n\n"
-        f"📋 Buyurtmalar: {row['orders_count']} ta\n"
-        f"💰 Jami: {float(row['total']):,.0f} so'm",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-async def master_rating(update, context):
-
-    user = await get_user(
-        update.effective_user.id
-    )
-
-    if not user:
-        return
-
-    await update.message.reply_text(
-        "⭐ <b>REYTINGIM</b>\n\n"
-        f"⭐ Reyting: {float(user['rating']):.2f}\n"
-        f"📊 Baholar: {user['rating_count']} ta\n"
-        f"📋 Tugallangan: {user['completed_orders']} ta",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# ADMIN CHECK
-# ============================================================
-
-def is_admin(user_id):
-    return user_id == ADMIN_ID
-
-
-# ============================================================
-# ADMIN STATISTICS
-# ============================================================
-
-async def admin_statistics(update, context):
-
-    if not is_admin(update.effective_user.id):
-        return
-
-    async with db_pool.acquire() as conn:
-
-        users = await conn.fetchval(
-            "SELECT COUNT(*) FROM users"
-        )
-
-        clients = await conn.fetchval("""
-            SELECT COUNT(*)
-            FROM users
-            WHERE role='client'
-        """)
-
-        masters = await conn.fetchval("""
-            SELECT COUNT(*)
-            FROM users
-            WHERE role='master'
-        """)
-
-        orders = await conn.fetchval(
-            "SELECT COUNT(*) FROM orders"
-        )
-
-        completed = await conn.fetchval("""
-            SELECT COUNT(*)
-            FROM orders
-            WHERE status='completed'
-        """)
-
-        revenue = await conn.fetchval("""
-            SELECT COALESCE(SUM(total_price),0)
-            FROM orders
-            WHERE status='completed'
-        """)
-
-        rating = await conn.fetchval("""
-            SELECT COALESCE(AVG(rating),0)
-            FROM users
-            WHERE role='master'
-              AND rating_count > 0
-        """)
-
-        today_orders = await conn.fetchval("""
-            SELECT COUNT(*)
-            FROM orders
-            WHERE created_at::date=CURRENT_DATE
-        """)
-
-        today_revenue = await conn.fetchval("""
-            SELECT COALESCE(SUM(total_price),0)
-            FROM orders
-            WHERE status='completed'
-              AND completed_at::date=CURRENT_DATE
-        """)
-
-    await update.message.reply_text(
-        "📊 <b>USTA 24 ANDIJON</b>\n"
-        "📊 <b>STATISTIKA</b>\n\n"
-        f"👥 Foydalanuvchilar: {users}\n"
-        f"👤 Mijozlar: {clients}\n"
-        f"👨‍🔧 Ustalar: {masters}\n"
-        f"📋 Buyurtmalar: {orders}\n"
-        f"✅ Tugallangan: {completed}\n"
-        f"💰 Daromad: {float(revenue):,.0f} so'm\n"
-        f"⭐ O'rtacha reyting: {float(rating):.2f}\n\n"
-        f"📅 Bugun: {today_orders} ta buyurtma\n"
-        f"💰 Bugungi daromad: "
-        f"{float(today_revenue):,.0f} so'm",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# ADMIN USERS
-# ============================================================
-
-async def admin_masters(update, context):
-
-    if not is_admin(update.effective_user.id):
-        return
-
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT *
-            FROM users
-            WHERE role='master'
-            ORDER BY rating DESC
-        """)
-
-    if not rows:
-        await update.message.reply_text(
-            "👨‍🔧 Ustalar yo'q."
-        )
-        return
-
-    text = "👨‍🔧 <b>USTALAR</b>\n\n"
-
-    for i, row in enumerate(rows, 1):
-        online = "🟢" if row["is_online"] else "🔴"
-
-        text += (
-            f"{i}. {online} "
-            f"<b>{row['full_name']}</b>\n"
-            f"   ID: {row['telegram_id']}\n"
-            f"   ⭐ {float(row['rating']):.2f}\n"
-            f"   📋 {row['completed_orders']} ta\n\n"
-        )
-
-    await update.message.reply_text(
-        text[:4000],
-        parse_mode=ParseMode.HTML,
-    )
-
-
-async def admin_clients(update, context):
-
-    if not is_admin(update.effective_user.id):
-        return
-
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT *
-            FROM users
-            WHERE role='client'
-            ORDER BY created_at DESC
-            LIMIT 50
-        """)
-
-    text = "👥 <b>MIJOZLAR</b>\n\n"
-
-    for row in rows:
-        text += (
-            f"👤 {row['full_name']}\n"
-            f"📞 {row['phone'] or '-'}\n"
-            f"🆔 {row['telegram_id']}\n"
-            f"📋 {row['completed_orders']}\n"
-            f"🎁 {row['bonus_points']} 🪙\n\n"
-        )
-
-    await update.message.reply_text(
-        text[:4000],
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# ADMIN ORDERS
-# ============================================================
-
-async def admin_orders(update, context):
-
-    if not is_admin(update.effective_user.id):
-        return
-
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT *
-            FROM orders
-            ORDER BY created_at DESC
-            LIMIT 20
-        """)
-
-    if not rows:
-        await update.message.reply_text(
-            "📋 Buyurtmalar yo'q."
-        )
-        return
-
-    for order in rows:
-        await update.message.reply_text(
-            format_order(order),
-            parse_mode=ParseMode.HTML,
-        )
-
-
-# ============================================================
-# ADMIN BROADCAST
-# ============================================================
-
-async def admin_broadcast_start(update, context):
-
-    if not is_admin(update.effective_user.id):
-        return
-
-    await update.message.reply_text(
-        "📢 Yuboriladigan xabarni yozing:"
-    )
-
-    return A_BROADCAST
-
-
-async def admin_broadcast_send(update, context):
-
-    if not is_admin(update.effective_user.id):
-        return
-
-    text = update.message.text
-
-    async with db_pool.acquire() as conn:
-        users = await conn.fetch("""
-            SELECT telegram_id
-            FROM users
-            WHERE is_active=TRUE
-        """)
-
-    sent = 0
-    failed = 0
-
-    for row in users:
-
-        try:
-            await context.bot.send_message(
-                row["telegram_id"],
-                "📢 <b>USTA 24 ANDIJON</b>\n\n"
-                + text,
-                parse_mode=ParseMode.HTML,
-            )
-
-            sent += 1
-
-            await asyncio.sleep(0.05)
-
-        except Exception:
-            failed += 1
-
-    await update.message.reply_text(
-        f"📢 <b>Рассылка tugadi</b>\n\n"
-        f"✅ Yuborildi: {sent}\n"
-        f"❌ Xato: {failed}",
-        parse_mode=ParseMode.HTML,
-        reply_markup=admin_menu(),
-    )
-
-
-# ============================================================
-# ADMIN REPORT CSV
-# ============================================================
-
-async def admin_report(update, context):
-
-    if not is_admin(update.effective_user.id):
-        return
-
-    async with db_pool.acquire() as conn:
-
-        rows = await conn.fetch("""
-            SELECT
-                id,
-                customer_name,
-                customer_phone,
-                service_name,
-                address,
-                total_price,
-                status,
-                master_name,
-                payment_status,
-                created_at
-            FROM orders
-            ORDER BY created_at DESC
-        """)
-
-    output = io.StringIO()
-
-    writer = csv.writer(output)
-
-    writer.writerow([
-        "ID",
-        "Customer",
-        "Phone",
-        "Service",
-        "Address",
-        "Total",
-        "Status",
-        "Master",
-        "Payment",
-        "Created",
-    ])
-
-    for row in rows:
-        writer.writerow([
-            row["id"],
-            row["customer_name"],
-            row["customer_phone"],
-            row["service_name"],
-            row["address"],
-            float(row["total_price"]),
-            row["status"],
-            row["master_name"],
-            row["payment_status"],
-            row["created_at"],
-        ])
-
-    data = io.BytesIO(
-        output.getvalue().encode("utf-8-sig")
-    )
-
-    data.name = "usta24_report.csv"
-
-    await update.message.reply_document(
-        document=data,
-        caption="📄 USTA 24 buyurtmalar hisoboti",
-    )
-
-
-# ============================================================
-# PROFILE
-# ============================================================
-
-async def profile(update, context):
-
-    user = await get_user(
-        update.effective_user.id
-    )
-
-    if not user:
-        return
-
-    await update.message.reply_text(
-        "👤 <b>PROFIL</b>\n\n"
-        f"👤 Ism: {user['full_name']}\n"
-        f"📞 Telefon: {user['phone'] or '-'}\n"
-        f"📋 Buyurtmalar: {user['completed_orders']}\n"
-        f"🎁 Bonus: {user['bonus_points']} 🪙\n"
-        f"⭐ Reyting: {float(user['rating']):.2f}",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# BONUS
-# ============================================================
-
-async def bonuses(update, context):
-
-    user = await get_user(
-        update.effective_user.id
-    )
-
-    if not user:
-        return
-
-    points = user["bonus_points"]
-
-    if points >= 1000:
-        level = "🥇 Oltin"
-    elif points >= 500:
-        level = "🥈 Kumush"
-    else:
-        level = "🥉 Bronza"
-
-    await update.message.reply_text(
-        "🎁 <b>LOYALLIK</b>\n\n"
-        f"🏅 Daraja: {level}\n"
-        f"🪙 Bonus: {points}\n"
-        f"💰 100 🪙 = 1,000 so'm chegirma",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# CONTACT
-# ============================================================
-
-async def contact(update, context):
-
-    await update.message.reply_text(
-        "📞 <b>USTA 24 ANDIJON</b>\n\n"
-        "☎️ Aloqa: +998 XX XXX XX XX\n"
-        "📍 Andijon shahri\n\n"
-        "Operator bilan bog'lanish uchun xabar qoldiring.",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# ROLE ASSIGN
-# ============================================================
-
-async def admin_make_master(update, context):
-
-    if not is_admin(update.effective_user.id):
-        return
-
-    if not context.args:
-        await update.message.reply_text(
-            "Foydalanish:\n"
-            "/master TELEGRAM_ID"
-        )
-        return
-
+    # Notify client
+    user_id = order[2]
     try:
-        user_id = int(
-            context.args[0]
-        )
-    except ValueError:
-        await update.message.reply_text(
-            "❌ Telegram ID noto'g'ri."
-        )
-        return
-
-    await upsert_user(
-        await context.bot.get_chat(user_id)
-    )
-
-    await set_role(
-        user_id,
-        ROLE_MASTER,
-    )
-
-    await update.message.reply_text(
-        f"✅ {user_id} endi USTA."
-    )
-
-    try:
-        await context.bot.send_message(
+        await bot.send_message(
             user_id,
-            "👨‍🔧 Siz USTA 24 tizimiga usta sifatida qo'shildingiz.\n\n"
-            "Botni qayta oching: /start",
+            f"🔧 <b>Ish boshlandi!</b>\n\n"
+            f"🆔 {order[1]}\n"
+            f"👨‍🔧 Usta: {order[13]}\n"
+            f"⏳ Taxminiy vaqt: 1.5 soat\n\n"
+            f"📞 Savollar bo'lsa, ustaga bog'lanishingiz mumkin!"
         )
-    except Exception:
+    except:
         pass
 
-
-# ============================================================
-# ADMIN COMMAND
-# ============================================================
-
-async def admin_command(update, context):
-
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text(
-            "❌ Siz admin emassiz."
-        )
-        return
-
-    await update.message.reply_text(
-        "👑 <b>ADMIN PANEL</b>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=admin_menu(),
-    )
-
-
-# ============================================================
-# MASTER COMMAND
-# ============================================================
-
-async def master_command(update, context):
-
-    user = await get_user(
-        update.effective_user.id
-    )
-
-    if not user or user["role"] != ROLE_MASTER:
-        await update.message.reply_text(
-            "❌ Siz usta sifatida ro'yxatdan o'tmagansiz."
-        )
-        return
-
-    await update.message.reply_text(
-        "👨‍🔧 <b>USTA PANELI</b>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=master_menu(),
-    )
-
-
-# ============================================================
-# AUTOMATIC REMINDERS
-# ============================================================
-
-async def reminder_worker(app):
-
-    while True:
-
-        try:
-
-            # 1. Accepted but not started
-            async with db_pool.acquire() as conn:
-
-                rows = await conn.fetch("""
-                    SELECT *
-                    FROM orders
-                    WHERE status IN ('accepted','on_way')
-                      AND accepted_at IS NOT NULL
-                      AND accepted_at <
-                          NOW() - INTERVAL '2 hours'
-                """)
-
-            for order in rows:
-
-                try:
-                    await app.bot.send_message(
-                        order["master_id"],
-                        f"🔔 Eslatma\n\n"
-                        f"Buyurtma #{order['id']} hali "
-                        "boshlanmagan.",
-                    )
-                except Exception:
-                    pass
-
-            # 2. Started but not completed
-            async with db_pool.acquire() as conn:
-
-                rows = await conn.fetch("""
-                    SELECT *
-                    FROM orders
-                    WHERE status='started'
-                      AND started_at IS NOT NULL
-                      AND started_at <
-                          NOW() - INTERVAL '6 hours'
-                """)
-
-            for order in rows:
-
-                try:
-                    await app.bot.send_message(
-                        order["master_id"],
-                        f"🔔 Eslatma\n\n"
-                        f"Buyurtma #{order['id']} "
-                        "6 soatdan beri jarayonda.",
-                    )
-                except Exception:
-                    pass
-
-        except Exception as e:
-            logger.error(
-                "Reminder worker error: %s",
-                e,
-            )
-
-        await asyncio.sleep(300)
-
-
-# ============================================================
-# TEXT ROUTER
-# ============================================================
-
-async def text_router(update, context):
-
-    if not update.message:
-        return
-
-    text = update.message.text
-
-    user = await get_user(
-        update.effective_user.id
-    )
-
-    if not user:
-        await upsert_user(
-            update.effective_user
-        )
-        user = await get_user(
-            update.effective_user.id
-        )
-
-    # --------------------------------------------------------
-    # ADMIN
-    # --------------------------------------------------------
-
-    if is_admin(update.effective_user.id):
-
-        if text == "👨‍🔧 Ustalar":
-            await admin_masters(update, context)
-            return
-
-        if text == "📋 Buyurtmalar":
-            await admin_orders(update, context)
-            return
-
-        if text == "👥 Mijozlar":
-            await admin_clients(update, context)
-            return
-
-        if text == "📊 Statistika":
-            await admin_statistics(update, context)
-            return
-
-        if text == "📄 Hisobot":
-            await admin_report(update, context)
-            return
-
-        if text == "💬 Xabarlar":
-            await admin_broadcast_start(
-                update,
-                context,
-            )
-            return
-
-        if text == "💰 Narxlar":
-            await services_command(update, context)
-            return
-
-        if text == "🎟 Kuponlar":
-            await update.message.reply_text(
-                "🎟 Kupon boshqaruvi:\n\n"
-                "Hozircha PostgreSQL orqali boshqariladi."
-            )
-            return
-
-        if text == "⚙️ Sozlamalar":
-            await update.message.reply_text(
-                "⚙️ Sozlamalar\n\n"
-                "Bot konfiguratsiyasi .env orqali boshqariladi."
-            )
-            return
-
-    # --------------------------------------------------------
-    # MASTER
-    # --------------------------------------------------------
-
-    if user["role"] == ROLE_MASTER:
-
-        if text == "📋 Yangi buyurtmalar":
-            await master_new_orders(
-                update,
-                context,
-            )
-            return
-
-        if text == "🔧 Faol buyurtmalar":
-            await master_active_orders(
-                update,
-                context,
-            )
-            return
-
-        if text == "📜 Tarix":
-            await master_history(
-                update,
-                context,
-            )
-            return
-
-        if text == "🟢 Online":
-            await master_online(
-                update,
-                context,
-            )
-            return
-
-        if text == "🔴 Offline":
-            await master_offline(
-                update,
-                context,
-            )
-            return
-
-        if text == "💰 Daromadim":
-            await master_income(
-                update,
-                context,
-            )
-            return
-
-        if text == "⭐ Reytingim":
-            await master_rating(
-                update,
-                context,
-            )
-            return
-
-        if text == "👤 Profil":
-            await profile(
-                update,
-                context,
-            )
-            return
-
-    # --------------------------------------------------------
-    # CLIENT
-    # --------------------------------------------------------
-
-    if text == "🛠 Buyurtma berish":
-        await new_order(
-            update,
-            context,
-        )
-        return
-
-    if text == "📋 Xizmatlar":
-        await services_command(
-            update,
-            context,
-        )
-        return
-
-    if text == "🔍 Buyurtmalarim":
-        await my_orders(
-            update,
-            context,
-        )
-        return
-
-    if text == "🔄 Qayta buyurtma":
-        await update.message.reply_text(
-            "🔄 Qayta buyurtma qilish uchun "
-            "yangi xizmat tanlang."
-        )
-        await new_order(
-            update,
-            context,
-        )
-        return
-
-    if text == "⭐ Reytinglarim":
-        await update.message.reply_text(
-            "⭐ Sizning reytinglaringiz "
-            "tugallangan buyurtmalar orqali saqlanadi."
-        )
-        return
-
-    if text == "🎁 Bonuslarim":
-        await bonuses(
-            update,
-            context,
-        )
-        return
-
-    if text == "📞 Aloqa":
-        await contact(
-            update,
-            context,
-        )
-        return
-
-    if text == "👤 Profil":
-        await profile(
-            update,
-            context,
-        )
-        return
-
-    if text == "✍️ Manzilni qo'lda yozish":
-        await manual_address(
-            update,
-            context,
-        )
-        return
-
-    # If user is waiting for address
-    if context.user_data.get("waiting_address"):
-        await receive_address(
-            update,
-            context,
-        )
-        return
-
-    await update.message.reply_text(
-        "🏠 Menyu:",
-        reply_markup=(
-            admin_menu()
-            if is_admin(update.effective_user.id)
-            else master_menu()
-            if user["role"] == ROLE_MASTER
-            else main_menu()
-        ),
-    )
-
-
-# ============================================================
-# ERROR HANDLER
-# ============================================================
-
-async def error_handler(update, context):
-
-    logger.exception(
-        "Unhandled exception:",
-        exc_info=context.error,
-    )
-
+    # Notify group
     try:
-
-        if update and update.effective_message:
-            await update.effective_message.reply_text(
-                "⚠️ Тизимда вақтинчалик хато юз берди.\n"
-                "Илтимос, қайта уриниб кўринг."
-            )
-
-    except Exception:
+        await bot.send_message(
+            GROUP_ID,
+            f"🔧 #{order[1]} ish boshlandi! Usta: {order[13]}"
+        )
+    except:
         pass
 
+    await callback.message.edit_text(
+        f"🔧 <b>Ish boshlandi!</b>\n"
+        f"🆔 {order[1]}"
+    )
+    await callback.answer()
 
-# ============================================================
-# POST INIT
-# ============================================================
+@dp.callback_query(F.data.startswith("finish_work_"))
+async def finish_work(callback: CallbackQuery, state: FSMContext):
+    order_id = int(callback.data.split("_")[2])
+    await state.update_data(finish_order_id=order_id)
 
-async def post_init(application):
+    await callback.message.answer(
+        "📸 <b>Ish natijasi rasmini yuboring!</b>\n\n"
+        "📸 Rasm yuborish MAJBURIY!\n"
+        "🖼 1-5 ta rasm yuborishingiz mumkin\n\n"
+        "⏱ Keyin ish vaqtini va narxni kiritasiz\n\n"
+        "📸 <b>Rasm yuboring:</b>"
+    )
+    await state.set_state(MasterState.waiting_result_photo)
+    await callback.answer()
 
-    await init_db()
+@dp.message(MasterState.waiting_result_photo)
+async def finish_work_photo(message: Message, state: FSMContext):
+    photo_ids = []
+    if message.photo:
+        photo_ids.append(message.photo[-1].file_id)
 
-    application.create_task(
-        reminder_worker(application)
+    # If user sends multiple photos, collect them
+    # We'll use a simple approach - store last photo
+    await state.update_data(result_photo=",".join(photo_ids))
+
+    await message.answer(
+        "⏱ <b>Ish davomiyligini kiriting (soatlarda):</b>\n\n"
+        "Masalan: 1.5 (1.5 soat)"
+    )
+    await state.set_state(MasterState.waiting_duration)
+
+@dp.message(MasterState.waiting_duration)
+async def finish_work_duration(message: Message, state: FSMContext):
+    try:
+        duration = float(message.text.replace(",", "."))
+    except:
+        await message.answer("❌ Iltimos, to'g'ri vaqt kiriting (masalan: 1.5):")
+        return
+
+    await state.update_data(duration=duration)
+
+    await message.answer(
+        "💰 <b>Ish narxini kiriting (so'mda):</b>\n\n"
+        "Masalan: 120000"
+    )
+    await state.set_state(MasterState.waiting_price)
+
+@dp.message(MasterState.waiting_price)
+async def finish_work_price(message: Message, state: FSMContext):
+    try:
+        price = int(message.text.replace(" ", "").replace(",", ""))
+    except:
+        await message.answer("❌ Iltimos, to'g'ri narx kiriting (masalan: 120000):")
+        return
+
+    data = await state.get_data()
+    order_id = data.get("finish_order_id")
+    result_photo = data.get("result_photo", "")
+    duration = data.get("duration", 1)
+
+    order = db.get_order(order_id)
+    if not order:
+        await message.answer("❌ Buyurtma topilmadi!")
+        await state.clear()
+        return
+
+    # Update order
+    db.update_order_status(
+        order_id=order_id,
+        status="tugallangan",
+        duration=int(duration),
+        price=price,
+        result_photo=result_photo
     )
 
-    logger.info(
-        "USTA 24 ANDIJON started."
+    # Add bonus for client (if order completed)
+    user_id = order[2]
+    db.add_bonus(user_id, order_id, int(price * 0.05), "order_complete")
+
+    # Notify client
+    try:
+        await bot.send_message(
+            user_id,
+            f"✅ <b>Ish yakunlandi!</b>\n\n"
+            f"🆔 {order[1]}\n"
+            f"🛠 {order[3]} – {order[4]}\n"
+            f"👨‍🔧 Usta: {order[13]}\n"
+            f"⏱ Davomiyligi: {duration} soat\n"
+            f"💰 To'lov: {price:,} so'm\n\n"
+            f"📸 <b>Ish natijasi rasmi:</b>\n"
+            f"✅ {result_photo.count(',') + 1 if result_photo else 0} ta rasm\n\n"
+            f"💵 <b>To'lov:</b> Faqat naqd pul!\n"
+            f"⭐ <b>Reyting qoldirishni unutmang!</b>"
+        )
+    except:
+        pass
+
+    # Notify group
+    try:
+        await bot.send_message(
+            GROUP_ID,
+            f"✅ #{order[1]} buyurtma yakunlandi!\n"
+            f"👨‍🔧 Usta: {order[13]} (⭐4.8)\n"
+            f"⏱ {duration} soat\n"
+            f"💰 {price:,} so'm\n"
+            f"📸 {result_photo.count(',') + 1 if result_photo else 0} ta rasm"
+        )
+    except:
+        pass
+
+    # Notify admin
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                admin_id,
+                f"✅ <b>Ish yakunlandi!</b>\n"
+                f"🆔 {order[1]}\n"
+                f"👤 Mijoz: {db.get_user(order[2])[1] if db.get_user(order[2]) else 'Noma'lum'}\n"
+                f"👨‍🔧 Usta: {order[13]}\n"
+                f"⏱ {duration} soat\n"
+                f"💰 {price:,} so'm\n"
+                f"📸 Rasm: {'✅' if result_photo else '❌'}\n\n"
+                f"[✅ Tasdiqlash]  [❌ Rad etish]",
+                reply_markup=get_inline_keyboard([
+                    ("✅ Tasdiqlash", f"admin_confirm_{order_id}"),
+                    ("❌ Rad etish", f"admin_reject_{order_id}")
+                ])
+            )
+        except:
+            pass
+
+    await message.answer(
+        f"✅ <b>Buyurtma yakunlandi!</b>\n\n"
+        f"🆔 {order[1]}\n"
+        f"⏱ {duration} soat\n"
+        f"💰 {price:,} so'm\n"
+        f"📸 Rasm: {'✅' if result_photo else '❌'}\n\n"
+        f"📨 Mijozga xabar yuborildi!\n"
+        f"📨 Adminga xabar yuborildi!"
     )
 
+    await state.clear()
 
-# ============================================================
-# POST SHUTDOWN
-# ============================================================
+# ---------- REVIEW ----------
 
-async def post_shutdown(application):
+@dp.message(F.text == "⭐ Reytingim")
+async def my_rating(message: Message):
+    user_id = message.from_user.id
+    master = db.get_master(user_id)
 
-    global db_pool
+    if not master:
+        # Show user's rating as client
+        orders = db.get_user_orders(user_id, "tugallangan")
+        total_orders = len(orders)
+        await message.answer(
+            f"⭐ <b>Mening reytingim</b>\n\n"
+            f"📋 Jami buyurtmalar: {total_orders}\n"
+            f"⭐ Siz hali reyting qoldirmagansiz\n\n"
+            f"📝 Buyurtmalaringizni yakunlang va reyting qoldiring!"
+        )
+        return
 
-    if db_pool:
-        await db_pool.close()
+    reviews = db.get_master_reviews(user_id)
 
-    logger.info(
-        "PostgreSQL connection closed."
+    rating_text = f"⭐ <b>Mening reytingim</b>\n\n"
+    rating_text += f"⭐ {master[7]:.1f} ({master[8]} ta baho)\n\n"
+
+    if reviews:
+        rating_text += "📝 <b>Oxirgi sharhlar:</b>\n"
+        for review in reviews[:3]:
+            rating_text += f"├── ⭐ {review[3]} – {review[4][:50]}...\n"
+
+    rating_text += f"\n📊 <b>Statistika:</b>\n"
+    rating_text += f"├── Jami ish: {master[8]} ta\n"
+    rating_text += f"├── 24/7: {'✅' if master[8] == 1 else '❌'}\n"
+    rating_text += f"└── Narx: {master[4]:,} so'm/soat"
+
+    await message.answer(rating_text)
+
+@dp.message(F.text == "📝 Sharh qoldirish")
+async def review_cmd(message: Message, state: FSMContext):
+    orders = db.get_user_orders(message.from_user.id, "tugallangan")
+
+    if not orders:
+        await message.answer("📭 Sizda yakunlangan buyurtmalar yo'q")
+        return
+
+    buttons = []
+    for order in orders[:5]:
+        master_name = order[13] or "Noma'lum"
+        buttons.append((f"#{order[1]} – {master_name}", f"review_order_{order[0]}"))
+
+    if not buttons:
+        await message.answer("📭 Sharh qoldirish uchun buyurtma topilmadi")
+        return
+
+    await message.answer(
+        "⭐ <b>Kimga sharh qoldirmoqchisiz?</b>",
+        reply_markup=get_inline_keyboard(buttons)
+    )
+    await state.set_state(ReviewState.waiting_master)
+
+@dp.callback_query(ReviewState.waiting_master)
+async def review_select_master(callback: CallbackQuery, state: FSMContext):
+    order_id = int(callback.data.split("_")[2])
+    order = db.get_order(order_id)
+
+    if not order:
+        await callback.answer("❌ Buyurtma topilmadi!")
+        return
+
+    await state.update_data(review_order_id=order_id, master_id=order[12])
+
+    await callback.message.edit_text(
+        "⭐ <b>Baho bering:</b>",
+        reply_markup=get_inline_keyboard([
+            ("⭐", "rating_1"),
+            ("⭐⭐", "rating_2"),
+            ("⭐⭐⭐", "rating_3"),
+            ("⭐⭐⭐⭐", "rating_4"),
+            ("⭐⭐⭐⭐⭐", "rating_5")
+        ])
+    )
+    await state.set_state(ReviewState.waiting_rating)
+    await callback.answer()
+
+@dp.callback_query(ReviewState.waiting_rating)
+async def review_rating(callback: CallbackQuery, state: FSMContext):
+    rating = int(callback.data.split("_")[1])
+    await state.update_data(rating=rating)
+
+    await callback.message.edit_text(
+        "📝 <b>Sharhingizni yozing:</b>\n\n"
+        "Fikringizni yozib qoldiring..."
+    )
+    await state.set_state(ReviewState.waiting_review)
+    await callback.answer()
+
+@dp.message(ReviewState.waiting_review)
+async def review_text(message: Message, state: FSMContext):
+    await state.update_data(review=message.text)
+
+    await message.answer(
+        "📸 <b>Rasm yuboring (ixtiyoriy):</b>\n\n"
+        "🖼 Rasm yuborish yoki ⏭ O'tkazib yuborish",
+        reply_markup=get_inline_keyboard([
+            ("⏭ O'tkazib yuborish", "review_skip_photo")
+        ])
+    )
+    await state.set_state(ReviewState.waiting_photo)
+
+@dp.message(ReviewState.waiting_photo)
+async def review_photo(message: Message, state: FSMContext):
+    photo_id = ""
+    if message.photo:
+        photo_id = message.photo[-1].file_id
+
+    await state.update_data(photo=photo_id)
+    await save_review(message, state)
+
+@dp.callback_query(F.data == "review_skip_photo")
+async def review_skip_photo(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(photo="")
+    await callback.message.edit_text("⏭ Rasm o'tkazib yuborildi")
+    await save_review(callback.message, state)
+    await callback.answer()
+
+async def save_review(message: Message, state: FSMContext):
+    data = await state.get_data()
+    order_id = data.get("review_order_id")
+    master_id = data.get("master_id")
+    rating = data.get("rating")
+    review_text = data.get("review")
+    photo = data.get("photo", "")
+
+    if not all([order_id, master_id, rating, review_text]):
+        await message.answer("❌ Xatolik yuz berdi. Qayta urinib ko'ring.")
+        await state.clear()
+        return
+
+    # Save review
+    db.add_review(order_id, message.from_user.id, master_id, rating, review_text, photo)
+
+    # Update order status
+    db.update_order_status(order_id, "tugallangan")
+
+    # Add bonus
+    db.add_bonus(message.from_user.id, order_id, 100, "review")
+
+    await message.answer(
+        f"✅ <b>Sharhingiz yuborildi!</b>\n\n"
+        f"⭐ {rating} yulduz\n"
+        f"📝 {review_text[:100]}...\n\n"
+        f"🎁 Sizga 100 bonus ball qo'shildi!"
     )
 
+    # Notify master
+    try:
+        await bot.send_message(
+            master_id,
+            f"⭐ <b>Sizga yangi sharh qoldirildi!</b>\n"
+            f"⭐ {rating} yulduz\n"
+            f"📝 {review_text[:100]}..."
+        )
+    except:
+        pass
 
-# ============================================================
-# MAIN
-# ============================================================
+    await state.clear()
 
-def main():
+# ---------- HELP AND OTHER ----------
 
-    if not BOT_TOKEN:
-        raise RuntimeError(
-            "BOT_TOKEN topilmadi."
+@dp.message(F.text == "📞 Tez yordam")
+async def help_cmd(message: Message):
+    await message.answer(
+        "📞 <b>Tez yordam</b>\n\n"
+        "1️⃣ 📞 Dispetcher: +9987706900003\n"
+        "2️⃣ 💬 Bot orqali yozing: @usta24_bot\n"
+        "3️⃣ ❓ Ko'p so'raladigan savollar:\n\n"
+        "Q: Qanday buyurtma berish mumkin?\n"
+        "A: '🛒 Buyurtma berish' tugmasini bosing!\n\n"
+        "Q: Narx qanday hisoblanadi?\n"
+        "A: Xizmat turiga qarab 40,000-80,000 so'm/soat\n\n"
+        "Q: Ustani qanday tanlash mumkin?\n"
+        "A: Sizga eng yaqin usta avtomatik tanlanadi!\n\n"
+        "Q: To'lov qanday amalga oshiriladi?\n"
+        "A: Faqat naqd pul! Ishdan keyin to'lov!\n\n"
+        "Q: 24/7 rejim qanday ishlaydi?\n"
+        "A: Shosilingch holatda 10-15 daqiqada yetib boramiz!",
+        reply_markup=get_inline_keyboard([
+            ("📞 Dispetcher", "call_dispetcher"),
+            ("🚨 24/7", "urgent_help")
+        ])
+    )
+
+@dp.callback_query(F.data == "urgent_help")
+async def urgent_help_callback(callback: CallbackQuery):
+    await callback.message.answer(
+        "🚨 <b>24/7 SHOSILINCH YORDAM</b>\n\n"
+        "📞 Dispetcher: +9987706900003\n"
+        "🕐 24/7 ishlaydi! KUTISH YO'Q!\n\n"
+        "⚡ <b>Dolzarb holatlar:</b>\n"
+        "├── 💧 Suv tўхtab qoldi\n"
+        "├── ⚡ Elektr ўчиб қолди\n"
+        "├── 🔥 Газ оқаётган\n"
+        "├── 🚪 Эшик синиб қолди\n"
+        "└── 🚰 Қувур ёрилган\n\n"
+        "💰 <b>Narx:</b>\n"
+        "├── 20% ustama (kechki vaqt)\n"
+        "├── Faqat naqd pul!\n"
+        "└── Ishdan keyin to'lov!\n\n"
+        "📞 Dispetcherga hoziroq qo'ng'iroq qiling!"
+    )
+    await callback.answer()
+
+# ---------- ADMIN HANDLERS ----------
+
+@dp.message(F.text == "👥 Foydalanuvchilar")
+async def admin_users(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("❌ Siz admin emassiz!")
+        return
+
+    users = db.get_all_users()
+    mijozlar = len([u for u in users if u[3] == "mijoz"])
+    ustalar = len([u for u in users if u[3] == "usta"])
+
+    await message.answer(
+        f"👥 <b>Foydalanuvchilar statistikasi</b>\n\n"
+        f"📊 Jami: {len(users)} ta\n"
+        f"├── 👤 Mijozlar: {mijozlar} ta\n"
+        f"├── 👨‍🔧 Ustalar: {ustalar} ta\n"
+        f"└── 👨‍💼 Adminlar: {len(ADMIN_IDS)} ta\n\n"
+        f"📊 <b>So'nggi 5 ta foydalanuvchi:</b>"
+    )
+
+    for user in users[-5:]:
+        await message.answer(
+            f"🆔 {user[0]}\n"
+            f"👤 {user[1]}\n"
+            f"📞 {user[2]}\n"
+            f"🎭 {user[3]}\n"
+            f"📅 {user[5]}"
         )
 
-    if not DATABASE_URL:
-        raise RuntimeError(
-            "DATABASE_URL topilmadi."
+@dp.message(F.text == "🛠 Buyurtmalar")
+async def admin_orders(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("❌ Siz admin emassiz!")
+        return
+
+    stats = db.get_orders_stats()
+
+    await message.answer(
+        f"📊 <b>Buyurtma statistikasi</b>\n\n"
+        f"📋 Jami: {stats[0]} ta\n"
+        f"├── 🆕 Yangi: {stats[1]} ta\n"
+        f"├── ✅ Qabul qilingan: {stats[2]} ta\n"
+        f"├── 🔧 Jarayonda: {stats[3]} ta\n"
+        f"├── ✅ Tugallangan: {stats[4]} ta\n"
+        f"└── ❌ Bekor: {stats[5]} ta\n\n"
+        f"💰 Jami daromad: {stats[6] or 0:,} so'm"
+    )
+
+@dp.message(F.text == "👨‍🔧 Ustalar")
+async def admin_masters(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("❌ Siz admin emassiz!")
+        return
+
+    masters = db.get_all_masters()
+
+    if not masters:
+        await message.answer("📭 Hozircha ustalar yo'q")
+        return
+
+    await message.answer(
+        f"👨‍🔧 <b>Ustalar ({len(masters)} ta):</b>"
+    )
+
+    for master in masters[:5]:
+        await message.answer(
+            f"👨‍🔧 {master[1]}\n"
+            f"📞 {master[2]}\n"
+            f"🛠 {master[3]}\n"
+            f"💰 {master[4]:,} so'm/soat\n"
+            f"⭐ {master[7]:.1f} ({master[8]} ta ish)\n"
+            f"🕐 {master[9]}\n"
+            f"24/7: {'✅' if master[8] else '❌'}"
         )
 
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
+# ---------- ADMIN ORDER CONFIRM/REJECT ----------
+
+@dp.callback_query(F.data.startswith("admin_confirm_"))
+async def admin_confirm(callback: CallbackQuery):
+    order_id = int(callback.data.split("_")[2])
+
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("❌ Siz admin emassiz!")
+        return
+
+    await callback.message.edit_text(
+        f"✅ <b>Buyurtma admin tomonidan tasdiqlandi!</b>\n"
+        f"🆔 #{order_id}"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("admin_reject_"))
+async def admin_reject(callback: CallbackQuery):
+    order_id = int(callback.data.split("_")[2])
+
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("❌ Siz admin emassiz!")
+        return
+
+    db.update_order_status(order_id, "bekor_qilingan")
+
+    await callback.message.edit_text(
+        f"❌ <b>Buyurtma admin tomonidan rad etildi!</b>\n"
+        f"🆔 #{order_id}"
+    )
+    await callback.answer()
+
+# ---------- CALLBACK FOR VIEWING PHOTOS ----------
+
+@dp.callback_query(F.data.startswith("view_photos_"))
+async def view_photos(callback: CallbackQuery):
+    order_id = int(callback.data.split("_")[2])
+    order = db.get_order(order_id)
+
+    if not order:
+        await callback.answer("❌ Buyurtma topilmadi!")
+        return
+
+    photos = []
+    if order[11]:  # problem_photo
+        photos.extend(order[11].split(","))
+    if order[12]:  # result_photo
+        photos.extend(order[12].split(","))
+
+    if not photos:
+        await callback.answer("📸 Bu buyurtmada rasmlar yo'q")
+        return
+
+    # Send first photo
+    try:
+        for photo_id in photos[:5]:
+            if photo_id:
+                await callback.message.answer_photo(photo_id)
+    except:
+        pass
+
+    await callback.answer()
+
+# ---------- STATISTICS ----------
+
+@dp.message(F.text == "📊 Mening statistika")
+async def my_stats(message: Message):
+    user_id = message.from_user.id
+    orders = db.get_user_orders(user_id)
+
+    total = len(orders)
+    completed = len([o for o in orders if o[10] == "tugallangan"])
+    cancelled = len([o for o in orders if o[10] == "bekor_qilingan"])
+    in_progress = len([o for o in orders if o[10] not in ["tugallangan", "bekor_qilingan"]])
+
+    bonuses = db.get_user_bonuses(user_id)
+
+    await message.answer(
+        f"📊 <b>Mening statistika</b>\n\n"
+        f"📋 Jami buyurtmalar: {total}\n"
+        f"├── ✅ Tugallangan: {completed}\n"
+        f"├── 🔧 Jarayonda: {in_progress}\n"
+        f"└── ❌ Bekor: {cancelled}\n\n"
+        f"🎁 Bonuslar: {bonuses:,} ball\n"
+        f"💰 1 ball = 100 so'm\n"
+        f"💵 Jami: {bonuses * 100:,} so'm"
     )
 
-    # --------------------------------------------------------
-    # COMMANDS
-    # --------------------------------------------------------
+@dp.message(F.text == "📊 Ish statistikasi")
+async def master_stats(message: Message):
+    user_id = message.from_user.id
+    master = db.get_master(user_id)
 
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start,
-        )
+    if not master:
+        await message.answer("❌ Siz usta emassiz!")
+        return
+
+    orders = db.get_master_orders(user_id)
+
+    total = len(orders)
+    completed = len([o for o in orders if o[10] == "tugallangan"])
+    total_price = sum([o[8] for o in orders if o[10] == "tugallangan"])
+
+    await message.answer(
+        f"📊 <b>Ish statistikasi</b>\n\n"
+        f"👨‍🔧 {master[1]}\n"
+        f"⭐ {master[7]:.1f} ({master[8]} ta ish)\n\n"
+        f"📋 Jami buyurtmalar: {total}\n"
+        f"├── ✅ Tugallangan: {completed}\n"
+        f"└── ⏳ Jarayonda: {total - completed}\n\n"
+        f"💰 Jami daromad: {total_price:,} so'm\n"
+        f"💰 O'rtacha: {total_price // max(completed, 1):,} so'm"
     )
 
-    application.add_handler(
-        CommandHandler(
-            "admin",
-            admin_command,
-        )
+# ---------- BONUS ----------
+
+@dp.message(F.text == "🎁 Loyallik va bonuslar")
+async def bonus_cmd(message: Message):
+    user_id = message.from_user.id
+    bonuses = db.get_user_bonuses(user_id)
+
+    orders = db.get_user_orders(user_id)
+    completed = len([o for o in orders if o[10] == "tugallangan"])
+
+    # Level calculation
+    if bonuses < 500:
+        level = "🥉 Mis"
+    elif bonuses < 1000:
+        level = "🥈 Kumush"
+    elif bonuses < 3000:
+        level = "🥇 Oltin"
+    elif bonuses < 5000:
+        level = "💎 Platina"
+    else:
+        level = "👑 Olmos"
+
+    await message.answer(
+        f"🎁 <b>Loyallik va bonuslar</b>\n\n"
+        f"💰 Bonus ball: {bonuses:,}\n"
+        f"💵 1 ball = 100 so'm\n"
+        f"💰 Jami: {bonuses * 100:,} so'm\n\n"
+        f"🏆 <b>Darajangiz:</b> {level}\n\n"
+        f"📋 <b>Darajalar:</b>\n"
+        f"├── 🥉 Mis: 0-500 ball\n"
+        f"├── 🥈 Kumush: 501-1000 ball\n"
+        f"├── 🥇 Oltin: 1001-3000 ball\n"
+        f"├── 💎 Platina: 3001-5000 ball\n"
+        f"└── 👑 Olmos: 5000+ ball\n\n"
+        f"📊 Jami buyurtmalar: {completed} ta"
     )
 
-    application.add_handler(
-        CommandHandler(
-            "master",
-            master_command,
-        )
+# ---------- SETTINGS ----------
+
+@dp.message(F.text == "⚙️ Sozlamalar")
+async def settings_cmd(message: Message):
+    user_id = message.from_user.id
+    user = db.get_user(user_id)
+
+    await message.answer(
+        f"⚙️ <b>Sozlamalar</b>\n\n"
+        f"👤 {user[1] if user else ''}\n"
+        f"📞 {user[2] if user else ''}\n"
+        f"🎭 {user[3] if user else ''}\n"
+        f"🌐 Til: 🇺🇿 O'zbek\n\n"
+        f"🔔 Bildirishnomalar: ✅ Yoqilgan\n"
+        f"🔊 Ovoz: 🔊 Yoqilgan\n\n"
+        f"📱 <b>Telefon:</b>\n"
+        f"├── 📞 Dispetcher: {DISPETCHER_PHONE}\n"
+        f"└── 🤖 Bot: @usta24_bot",
+        reply_markup=get_inline_keyboard([
+            ("🌐 Tilni o'zgartirish", "settings_lang"),
+            ("🔔 Bildirishnomalar", "settings_notif"),
+            ("📞 Telefon o'zgartirish", "settings_phone"),
+            ("⬅️ Orqaga", "back")
+        ])
     )
 
-    application.add_handler(
-        CommandHandler(
-            "services",
-            services_command,
-        )
-    )
+# ---------- ERROR HANDLER ----------
 
-    application.add_handler(
-        CommandHandler(
-            "stopchat",
-            stop_chat,
-        )
-    )
+@dp.errors()
+async def error_handler(event, error):
+    logger.error(f"Error: {error}")
+    try:
+        if event.message:
+            await event.message.answer("❌ Xatolik yuz berdi. Qayta urinib ko'ring.")
+    except:
+        pass
 
-    application.add_handler(
-        CommandHandler(
-            "report",
-            admin_report,
-        )
-    )
+# ---------- MAIN ----------
 
-    application.add_handler(
-        CommandHandler(
-            "make_master",
-            admin_make_master,
-        )
-    )
+async def main():
+    logger.info("🚀 Starting USTA 24 ANDIJON bot...")
+    logger.info(f"📞 Dispetcher: {DISPETCHER_PHONE}")
+    logger.info(f"👥 Admins: {ADMIN_IDS}")
+    logger.info(f"📨 Group ID: {GROUP_ID}")
 
-    # --------------------------------------------------------
-    # CONTACT
-    # --------------------------------------------------------
-
-    application.add_handler(
-        MessageHandler(
-            filters.CONTACT,
-            handle_contact,
-        )
-    )
-
-    # --------------------------------------------------------
-    # LOCATION
-    # --------------------------------------------------------
-
-    application.add_handler(
-        MessageHandler(
-            filters.LOCATION,
-            handle_location,
-        )
-    )
-
-    # --------------------------------------------------------
-    # CALLBACKS
-    # --------------------------------------------------------
-
-    application.add_handler(
-        CallbackQueryHandler(
-            category_callback,
-            pattern=r"^cat:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            service_callback,
-            pattern=r"^service:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            time_callback,
-            pattern=r"^time:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            coupon_callback,
-            pattern=r"^coupon:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            confirm_order_callback,
-            pattern=r"^order:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            master_accept_callback,
-            pattern=r"^accept:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            master_reject_callback,
-            pattern=r"^reject:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            arrival_callback,
-            pattern=r"^arrival:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            start_work_callback,
-            pattern=r"^startwork:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            finish_work_callback,
-            pattern=r"^finish:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            finish_confirm_callback,
-            pattern=r"^finishconfirm:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            payment_callback,
-            pattern=r"^payment:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            pay_method_callback,
-            pattern=r"^pay:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            rating_callback,
-            pattern=r"^rating:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            stars_callback,
-            pattern=r"^stars:",
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            chat_callback,
-            pattern=r"^chat:",
-        )
-    )
-
-    # --------------------------------------------------------
-    # TEXT
-    # --------------------------------------------------------
-
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            receive_review,
-            block=False,
-        )
-    )
-
-    # Main router after specialized handlers
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            text_router,
-            block=False,
-        )
-    )
-
-    # --------------------------------------------------------
-    # ERROR
-    # --------------------------------------------------------
-
-    application.add_error_handler(
-        error_handler
-    )
-
-    # --------------------------------------------------------
-    # RUN
-    # --------------------------------------------------------
-
-    logger.info(
-        "Starting Telegram polling..."
-    )
-
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-    )
-
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
