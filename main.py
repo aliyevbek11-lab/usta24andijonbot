@@ -1,1679 +1,1829 @@
+import os
 import asyncio
 import logging
-from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, types
-from aiogram.contrib.middlewares.logging import LoggingMiddleware
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-import psycopg2
-from psycopg2.extras import RealDictCursor
-import os
-import json
+from threading import Thread
 
-# ============ КОНФИГ ============
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-ADMIN_IDS = [123456789]
-DISPATCHER_IDS = []
+from flask import Flask
 
-DB_CONFIG = {
-    "host": "localhost",
-    "database": "ustatop_db",
-    "user": "postgres",
-    "password": "12345"
-}
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 
-# ============ ЛОГИНГ ============
-logging.basicConfig(level=logging.INFO)
-storage = MemoryStorage()
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot, storage=storage)
-dp.middleware.setup(LoggingMiddleware())
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
 
-# ============ ДАТАБАЗА ============
-class Database:
-    def __init__(self):
-        self.conn = psycopg2.connect(**DB_CONFIG)
-        self.cursor = self.conn.cursor()
-        self.create_tables()
 
-    def create_tables(self):
-        queries = [
-            """
-            CREATE TABLE IF NOT EXISTS mijozlar (
-                id SERIAL PRIMARY KEY,
-                tg_id BIGINT UNIQUE,
-                ism VARCHAR(100),
-                telefon VARCHAR(20),
-                manzil TEXT,
-                izoh TEXT,
-                yaratilgan TIMESTAMP DEFAULT NOW()
+# =========================================================
+# CONFIG
+# =========================================================
+
+TOKEN = os.getenv("BOT_TOKEN")
+MASTERS_GROUP_ID = os.getenv("MASTERS_GROUP_ID")
+ADMIN_ID = os.getenv("ADMIN_ID")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN topilmadi!")
+
+if not MASTERS_GROUP_ID:
+    raise RuntimeError("MASTERS_GROUP_ID topilmadi!")
+
+if not ADMIN_ID:
+    raise RuntimeError("ADMIN_ID topilmadi!")
+
+
+try:
+    MASTERS_GROUP_ID = int(MASTERS_GROUP_ID.strip())
+    ADMIN_ID = int(ADMIN_ID.strip())
+except ValueError:
+    raise RuntimeError(
+        "MASTERS_GROUP_ID va ADMIN_ID raqam bo‘lishi kerak!"
+    )
+
+
+# =========================================================
+# LOGGING
+# =========================================================
+
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO,
+)
+
+logger = logging.getLogger("usta24")
+
+
+# =========================================================
+# FLASK
+# =========================================================
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "USTA 24 BOT ISHLAYAPTI!"
+
+
+@app.route("/health")
+def health():
+    return "OK"
+
+
+def run_flask():
+    port = int(os.getenv("PORT", "10000"))
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
+
+
+# =========================================================
+# DATABASE
+# =========================================================
+
+db_pool = None
+
+
+async def init_database():
+    global db_pool
+
+    if not DATABASE_URL:
+        logger.warning(
+            "DATABASE_URL topilmadi. Memory rejimida ishlaydi."
+        )
+        return
+
+    try:
+        import asyncpg
+
+        db_pool = await asyncpg.create_pool(
+            DATABASE_URL,
+            min_size=1,
+            max_size=5,
+        )
+
+        async with db_pool.acquire() as conn:
+
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS customers (
+                    id SERIAL PRIMARY KEY,
+                    telegram_id BIGINT UNIQUE NOT NULL,
+                    name TEXT,
+                    phone TEXT,
+                    username TEXT,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    last_order_at TIMESTAMP
+                )
+                """
             )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS ustalar (
-                id SERIAL PRIMARY KEY,
-                tg_id BIGINT UNIQUE,
-                ism VARCHAR(100),
-                mutaxassislik VARCHAR(100),
-                telefon VARCHAR(20),
-                reyting FLOAT DEFAULT 0,
-                bajarilgan_count INT DEFAULT 0,
-                holat BOOLEAN DEFAULT True,
-                yaratilgan TIMESTAMP DEFAULT NOW()
+
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS orders (
+                    id SERIAL PRIMARY KEY,
+                    customer_id BIGINT NOT NULL,
+                    customer_name TEXT,
+                    phone TEXT,
+                    service TEXT,
+                    address TEXT,
+                    description TEXT,
+                    username TEXT,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    master_id BIGINT,
+                    master_name TEXT,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    accepted_at TIMESTAMP,
+                    started_at TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    cancelled_at TIMESTAMP,
+                    rejected_at TIMESTAMP
+                )
+                """
             )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS buyurtmalar (
-                id SERIAL PRIMARY KEY,
-                mijoz_tg_id BIGINT REFERENCES mijozlar(tg_id),
-                usta_id INT REFERENCES ustalar(id),
-                dispetcher_id BIGINT,
-                matn TEXT,
-                manzil TEXT,
-                narx DECIMAL(10,2),
-                holat VARCHAR(30) DEFAULT 'yangi',
-                yaratilgan TIMESTAMP DEFAULT NOW(),
-                qabul_qilingan TIMESTAMP,
-                boshlangan TIMESTAMP,
-                yakunlangan TIMESTAMP,
-                bekor_qilingan TIMESTAMP,
-                rad_etilgan TIMESTAMP
+
+        logger.info("PostgreSQL ulandi.")
+
+    except Exception as e:
+        logger.exception(
+            "PostgreSQL ulanishda xato: %s",
+            e
+        )
+        db_pool = None
+
+
+async def db_save_customer(
+    telegram_id,
+    name,
+    phone,
+    username,
+):
+    if not db_pool:
+        return
+
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO customers
+                    (telegram_id, name, phone, username, last_order_at)
+                VALUES
+                    ($1, $2, $3, $4, NOW())
+
+                ON CONFLICT (telegram_id)
+                DO UPDATE SET
+                    name = COALESCE($2, customers.name),
+                    phone = COALESCE($3, customers.phone),
+                    username = COALESCE($4, customers.username),
+                    last_order_at = NOW()
+                """,
+                telegram_id,
+                name,
+                phone,
+                username,
             )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS baholashlar (
-                id SERIAL PRIMARY KEY,
-                buyurtma_id INT REFERENCES buyurtmalar(id),
-                mijoz_tg_id BIGINT REFERENCES mijozlar(tg_id),
-                usta_id INT REFERENCES ustalar(id),
-                baho INT CHECK (baho >= 1 AND baho <= 5),
-                izoh TEXT,
-                yaratilgan TIMESTAMP DEFAULT NOW()
+
+    except Exception:
+        logger.exception("Customer saqlashda xato.")
+
+
+async def db_get_customer(telegram_id):
+    if not db_pool:
+        return None
+
+    try:
+        async with db_pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                SELECT name, phone
+                FROM customers
+                WHERE telegram_id = $1
+                """,
+                telegram_id,
             )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS xabarlar (
-                id SERIAL PRIMARY KEY,
-                kimdan BIGINT,
-                kimgatur VARCHAR(20),
-                matn TEXT,
-                yuborilgan TIMESTAMP DEFAULT NOW()
+
+    except Exception:
+        logger.exception("Customer olishda xato.")
+        return None
+
+
+async def db_create_order(order):
+    if not db_pool:
+        return None
+
+    try:
+        async with db_pool.acquire() as conn:
+
+            order_id = await conn.fetchval(
+                """
+                INSERT INTO orders (
+                    customer_id,
+                    customer_name,
+                    phone,
+                    service,
+                    address,
+                    description,
+                    username,
+                    status
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, 'open'
+                )
+                RETURNING id
+                """,
+                order["customer_id"],
+                order["name"],
+                order["phone"],
+                order["service"],
+                order["address"],
+                order["description"],
+                order["username"],
             )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS tolovlar (
-                id SERIAL PRIMARY KEY,
-                buyurtma_id INT REFERENCES buyurtmalar(id),
-                summa DECIMAL(10,2),
-                tur VARCHAR(20),
-                holat VARCHAR(20) DEFAULT 'kutilmoqda',
-                yaratilgan TIMESTAMP DEFAULT NOW()
+
+            return int(order_id)
+
+    except Exception:
+        logger.exception("Order yaratishda xato.")
+        return None
+
+
+async def db_update_status(
+    order_id,
+    status,
+    master_id=None,
+    master_name=None,
+):
+    if not db_pool:
+        return
+
+    timestamp_column = {
+        "accepted": "accepted_at",
+        "in_progress": "started_at",
+        "completed": "completed_at",
+        "cancelled": "cancelled_at",
+        "rejected": "rejected_at",
+    }.get(status)
+
+    try:
+        async with db_pool.acquire() as conn:
+
+            if timestamp_column:
+
+                await conn.execute(
+                    f"""
+                    UPDATE orders
+                    SET
+                        status = $1,
+                        master_id = COALESCE($2, master_id),
+                        master_name = COALESCE($3, master_name),
+                        {timestamp_column} = NOW()
+                    WHERE id = $4
+                    """,
+                    status,
+                    master_id,
+                    master_name,
+                    order_id,
+                )
+
+            else:
+
+                await conn.execute(
+                    """
+                    UPDATE orders
+                    SET
+                        status = $1,
+                        master_id = COALESCE($2, master_id),
+                        master_name = COALESCE($3, master_name)
+                    WHERE id = $4
+                    """,
+                    status,
+                    master_id,
+                    master_name,
+                    order_id,
+                )
+
+    except Exception:
+        logger.exception(
+            "Order #%s status yangilashda xato.",
+            order_id,
+        )
+
+
+async def db_get_orders(status=None):
+    if not db_pool:
+        return []
+
+    try:
+        async with db_pool.acquire() as conn:
+
+            if status:
+                return await conn.fetch(
+                    """
+                    SELECT *
+                    FROM orders
+                    WHERE status = $1
+                    ORDER BY id DESC
+                    """,
+                    status,
+                )
+
+            return await conn.fetch(
+                """
+                SELECT *
+                FROM orders
+                ORDER BY id DESC
+                """
             )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS eslatmalar (
-                id SERIAL PRIMARY KEY,
-                tg_id BIGINT,
-                matn TEXT,
-                vaqt TIMESTAMP,
-                yaratilgan TIMESTAMP DEFAULT NOW()
+
+    except Exception:
+        logger.exception("Orderlarni olishda xato.")
+        return []
+
+
+async def db_get_order(order_id):
+    if not db_pool:
+        return None
+
+    try:
+        async with db_pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                SELECT *
+                FROM orders
+                WHERE id = $1
+                """,
+                order_id,
             )
-            """
-        ]
-        for q in queries:
-            self.cursor.execute(q)
-        self.conn.commit()
 
-    # ============ МИЖОЗ ============
-    def mijoz_qoshish(self, tg_id, ism, telefon, manzil=None, izoh=None):
-        self.cursor.execute(
-            """INSERT INTO mijozlar (tg_id, ism, telefon, manzil, izoh) 
-               VALUES (%s, %s, %s, %s, %s) 
-               ON CONFLICT (tg_id) DO UPDATE SET ism=%s, telefon=%s, manzil=%s, izoh=%s""",
-            (tg_id, ism, telefon, manzil, izoh, ism, telefon, manzil, izoh)
-        )
-        self.conn.commit()
+    except Exception:
+        logger.exception("Order olishda xato.")
+        return None
 
-    def mijoz_get(self, tg_id):
-        self.cursor.execute("SELECT * FROM mijozlar WHERE tg_id=%s", (tg_id,))
-        return self.cursor.fetchone()
 
-    def mijoz_all(self):
-        self.cursor.execute("SELECT * FROM mijozlar ORDER BY id DESC")
-        return self.cursor.fetchall()
+async def db_statistics():
+    result = {
+        "total": 0,
+        "open": 0,
+        "accepted": 0,
+        "in_progress": 0,
+        "completed": 0,
+        "cancelled": 0,
+        "rejected": 0,
+    }
 
-    def mijoz_izoh_update(self, tg_id, izoh):
-        self.cursor.execute("UPDATE mijozlar SET izoh=%s WHERE tg_id=%s", (izoh, tg_id))
-        self.conn.commit()
+    if not db_pool:
+        return result
 
-    # ============ УСТА ============
-    def usta_qoshish(self, tg_id, ism, mutaxassislik, telefon):
-        self.cursor.execute(
-            """INSERT INTO ustalar (tg_id, ism, mutaxassislik, telefon) 
-               VALUES (%s, %s, %s, %s) 
-               ON CONFLICT (tg_id) DO UPDATE SET ism=%s, mutaxassislik=%s, telefon=%s""",
-            (tg_id, ism, mutaxassislik, telefon, ism, mutaxassislik, telefon)
-        )
-        self.conn.commit()
-
-    def usta_ochirish(self, tg_id):
-        self.cursor.execute("DELETE FROM ustalar WHERE tg_id=%s", (tg_id,))
-        self.conn.commit()
-
-    def usta_holat_update(self, tg_id, holat):
-        self.cursor.execute("UPDATE ustalar SET holat=%s WHERE tg_id=%s", (holat, tg_id))
-        self.conn.commit()
-
-    def usta_get(self, tg_id=None, usta_id=None):
-        if tg_id:
-            self.cursor.execute("SELECT * FROM ustalar WHERE tg_id=%s", (tg_id,))
-        elif usta_id:
-            self.cursor.execute("SELECT * FROM ustalar WHERE id=%s", (usta_id,))
-        else:
-            self.cursor.execute("SELECT * FROM ustalar ORDER BY reyting DESC")
-            return self.cursor.fetchall()
-        return self.cursor.fetchone()
-
-    def usta_barcha(self):
-        self.cursor.execute("SELECT * FROM ustalar ORDER BY reyting DESC")
-        return self.cursor.fetchall()
-
-    def usta_top(self, mutaxassislik=None):
-        if mutaxassislik:
-            self.cursor.execute(
-                "SELECT * FROM ustalar WHERE mutaxassislik ILIKE %s AND holat=True ORDER BY reyting DESC",
-                (f"%{mutaxassislik}%",)
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM orders
+                GROUP BY status
+                """
             )
-        else:
-            self.cursor.execute("SELECT * FROM ustalar WHERE holat=True ORDER BY reyting DESC")
-        return self.cursor.fetchall()
 
-    def usta_top_bajargan(self):
-        self.cursor.execute("SELECT * FROM ustalar ORDER BY bajarilgan_count DESC LIMIT 10")
-        return self.cursor.fetchall()
+        for row in rows:
+            status = row["status"]
+            count = int(row["count"])
 
-    # ============ БУЮРТМА ============
-    def buyurtma_qoshish(self, mijoz_tg_id, matn, manzil=None, narx=None):
-        self.cursor.execute(
-            """INSERT INTO buyurtmalar (mijoz_tg_id, matn, manzil, narx) 
-               VALUES (%s, %s, %s, %s) RETURNING id""",
-            (mijoz_tg_id, matn, manzil, narx)
-        )
-        self.conn.commit()
-        return self.cursor.fetchone()[0]
+            if status in result:
+                result[status] = count
 
-    def buyurtma_get(self, buyurtma_id):
-        self.cursor.execute("SELECT * FROM buyurtmalar WHERE id=%s", (buyurtma_id,))
-        return self.cursor.fetchone()
+            result["total"] += count
 
-    def buyurtma_update_holat(self, buyurtma_id, holat, usta_id=None, dispetcher_id=None):
-        now = datetime.now()
-        query = "UPDATE buyurtmalar SET holat=%s"
-        params = [holat]
-        
-        if usta_id:
-            query += ", usta_id=%s"
-            params.append(usta_id)
-        if dispetcher_id:
-            query += ", dispetcher_id=%s"
-            params.append(dispetcher_id)
-        
-        holat_map = {
-            'qabul_qilingan': ('qabul_qilingan', now),
-            'ishda': ('boshlangan', now),
-            'yakunlangan': ('yakunlangan', now),
-            'bekor_qilingan': ('bekor_qilingan', now),
-            'rad_etilgan': ('rad_etilgan', now)
-        }
-        if holat in holat_map:
-            field, time_field = holat_map[holat]
-            query += f", {field}=%s"
-            params.append(time_field)
-        
-        query += " WHERE id=%s"
-        params.append(buyurtma_id)
-        
-        self.cursor.execute(query, tuple(params))
-        self.conn.commit()
-        
-        if holat == 'yakunlangan' and usta_id:
-            self.cursor.execute(
-                "UPDATE ustalar SET bajarilgan_count=bajarilgan_count+1 WHERE id=%s",
-                (usta_id,)
-            )
-            self.conn.commit()
+        return result
 
-    def buyurtma_usta_change(self, buyurtma_id, yangi_usta_id):
-        self.cursor.execute(
-            "UPDATE buyurtmalar SET usta_id=%s, holat='qabul_qilingan' WHERE id=%s",
-            (yangi_usta_id, buyurtma_id)
-        )
-        self.conn.commit()
+    except Exception:
+        logger.exception("Statistika xatosi.")
+        return result
 
-    def buyurtma_all(self, holat=None):
-        if holat:
-            self.cursor.execute("SELECT * FROM buyurtmalar WHERE holat=%s ORDER BY id DESC", (holat,))
-        else:
-            self.cursor.execute("SELECT * FROM buyurtmalar ORDER BY id DESC")
-        return self.cursor.fetchall()
 
-    def buyurtma_mijoz(self, tg_id):
-        self.cursor.execute("SELECT * FROM buyurtmalar WHERE mijoz_tg_id=%s ORDER BY id DESC", (tg_id,))
-        return self.cursor.fetchall()
+# =========================================================
+# MEMORY
+# =========================================================
 
-    def buyurtma_usta(self, usta_id):
-        self.cursor.execute("SELECT * FROM buyurtmalar WHERE usta_id=%s ORDER BY id DESC", (usta_id,))
-        return self.cursor.fetchall()
+user_orders = {}
+memory_orders = {}
+memory_order_counter = 0
 
-    def buyurtma_statistika(self):
-        self.cursor.execute(
-            """SELECT 
-                COUNT(*) as jami,
-                SUM(CASE WHEN holat='yangi' THEN 1 ELSE 0 END) as yangi,
-                SUM(CASE WHEN holat='qabul_qilingan' THEN 1 ELSE 0 END) as qabul,
-                SUM(CASE WHEN holat='ishda' THEN 1 ELSE 0 END) as ishda,
-                SUM(CASE WHEN holat='yakunlangan' THEN 1 ELSE 0 END) as yakun,
-                SUM(CASE WHEN holat='bekor_qilingan' THEN 1 ELSE 0 END) as bekor,
-                SUM(CASE WHEN holat='rad_etilgan' THEN 1 ELSE 0 END) as rad
-            FROM buyurtmalar"""
-        )
-        return self.cursor.fetchone()
 
-    def buyurtma_oylik_statistika(self):
-        self.cursor.execute(
-            """SELECT 
-                DATE_TRUNC('month', yaratilgan) as oy,
-                COUNT(*) as jami,
-                SUM(CASE WHEN holat='yakunlangan' THEN 1 ELSE 0 END) as yakun
-            FROM buyurtmalar 
-            WHERE yaratilgan >= CURRENT_DATE - INTERVAL '6 months'
-            GROUP BY oy
-            ORDER BY oy DESC"""
-        )
-        return self.cursor.fetchall()
+# =========================================================
+# MENUS
+# =========================================================
 
-    # ============ БАҲОЛАШ ============
-    def baho_qoshish(self, buyurtma_id, mijoz_tg_id, usta_id, baho, izoh=None):
-        self.cursor.execute(
-            "INSERT INTO baholashlar (buyurtma_id, mijoz_tg_id, usta_id, baho, izoh) VALUES (%s, %s, %s, %s, %s)",
-            (buyurtma_id, mijoz_tg_id, usta_id, baho, izoh)
-        )
-        self.conn.commit()
-        self.cursor.execute(
-            "UPDATE ustalar SET reyting=(SELECT AVG(baho) FROM baholashlar WHERE usta_id=%s) WHERE id=%s",
-            (usta_id, usta_id)
-        )
-        self.conn.commit()
-
-    def baho_get_usta(self, usta_id):
-        self.cursor.execute("SELECT AVG(baho) as ortacha, COUNT(*) as soni FROM baholashlar WHERE usta_id=%s", (usta_id,))
-        return self.cursor.fetchone()
-
-    # ============ ТЎЛОВ ============
-    def tolov_qoshish(self, buyurtma_id, summa, tur):
-        self.cursor.execute(
-            "INSERT INTO tolovlar (buyurtma_id, summa, tur) VALUES (%s, %s, %s) RETURNING id",
-            (buyurtma_id, summa, tur)
-        )
-        self.conn.commit()
-        return self.cursor.fetchone()[0]
-
-    def tolov_holat_update(self, tolov_id, holat):
-        self.cursor.execute("UPDATE tolovlar SET holat=%s WHERE id=%s", (holat, tolov_id))
-        self.conn.commit()
-
-    def tolov_get_buyurtma(self, buyurtma_id):
-        self.cursor.execute("SELECT * FROM tolovlar WHERE buyurtma_id=%s", (buyurtma_id,))
-        return self.cursor.fetchall()
-
-    # ============ ЭСЛАТМА ============
-    def eslatma_qoshish(self, tg_id, matn, vaqt):
-        self.cursor.execute(
-            "INSERT INTO eslatmalar (tg_id, matn, vaqt) VALUES (%s, %s, %s) RETURNING id",
-            (tg_id, matn, vaqt)
-        )
-        self.conn.commit()
-        return self.cursor.fetchone()[0]
-
-    def eslatma_get_vaqt(self, vaqt):
-        self.cursor.execute("SELECT * FROM eslatmalar WHERE vaqt <= %s AND vaqt > %s", 
-                           (vaqt, vaqt - timedelta(minutes=1)))
-        return self.cursor.fetchall()
-
-    def eslatma_ochirish(self, eslatma_id):
-        self.cursor.execute("DELETE FROM eslatmalar WHERE id=%s", (eslatma_id,))
-        self.conn.commit()
-
-    # ============ ХАБАР ============
-    def xabar_save(self, kimdan, kimgatur, matn):
-        self.cursor.execute(
-            "INSERT INTO xabarlar (kimdan, kimgatur, matn) VALUES (%s, %s, %s)",
-            (kimdan, kimgatur, matn)
-        )
-        self.conn.commit()
-
-    def close(self):
-        self.cursor.close()
-        self.conn.close()
-
-db = Database()
-
-# ============ КЛАВИАТУРАЛАР ============
 def main_menu():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add(
-        KeyboardButton("📝 Буюртма бериш"),
-        KeyboardButton("📋 Буюртмаларим"),
-        KeyboardButton("👨‍🔧 Усталар"),
-        KeyboardButton("⭐ Баҳолаш"),
-        KeyboardButton("📞 Диспетчерга мурожаат"),
-        KeyboardButton("💬 Отзыв қолдириш"),
-        KeyboardButton("👑 Админ панели")
+    return ReplyKeyboardMarkup(
+        [
+            ["🛠 Usta chaqirish"],
+            ["📋 Xizmatlar", "📞 Aloqa"],
+        ],
+        resize_keyboard=True,
     )
-    return kb
 
-def mijoz_menu():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add(
-        KeyboardButton("👤 Менинг маълумотларим"),
-        KeyboardButton("📝 Буюртма бериш"),
-        KeyboardButton("📋 Буюртмаларим"),
-        KeyboardButton("⭐ Баҳолаш"),
-        KeyboardButton("🔁 Қайта буюртма бериш"),
-        KeyboardButton("💬 Отзыв қолдириш"),
-        KeyboardButton("📍 Геолокация"),
-        KeyboardButton("💳 Онлайн тўлов"),
-        KeyboardButton("🔔 Эслатма"),
-        KeyboardButton("🏠 Асосий меню")
-    )
-    return kb
 
 def dispatcher_menu():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add(
-        KeyboardButton("📋 Барча буюртмалар"),
-        KeyboardButton("🆕 Янги буюртмалар"),
-        KeyboardButton("🟡 Қабул қилинганлар"),
-        KeyboardButton("🔵 Ишдаги буюртмалар"),
-        KeyboardButton("✅ Якунланганлар"),
-        KeyboardButton("❌ Бекор қилинганлар"),
-        KeyboardButton("🚫 Рад этилганлар"),
-        KeyboardButton("📊 Статистика"),
-        KeyboardButton("👨‍🔧 Усталар статистикаси"),
-        KeyboardButton("📈 Ойлик ҳисобот"),
-        KeyboardButton("🏠 Асосий меню")
+    return ReplyKeyboardMarkup(
+        [
+            ["🆕 Yangi buyurtmalar"],
+            ["🟡 Qabul qilingan"],
+            ["🔵 Ish jarayonida"],
+            ["✅ Yakunlangan"],
+            ["❌ Bekor qilingan"],
+            ["🚫 Rad etilgan"],
+            ["📋 Barcha buyurtmalar"],
+            ["📊 Statistika"],
+        ],
+        resize_keyboard=True,
     )
-    return kb
 
-def usta_menu():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add(
-        KeyboardButton("👨‍🔧 Менинг профилим"),
-        KeyboardButton("📊 Менинг статистикам"),
-        KeyboardButton("🏆 Энг кўп буюртма бажарган усталар"),
-        KeyboardButton("🟢 Онлайн"),
-        KeyboardButton("🔴 Банд"),
-        KeyboardButton("📋 Менинг буюртмаларим"),
-        KeyboardButton("💰 Даромад"),
-        KeyboardButton("🏠 Асосий меню")
+
+def service_menu():
+    return ReplyKeyboardMarkup(
+        [
+            ["🪑 Mebel"],
+            ["🚚 Yuk tashish / ko‘chirish"],
+            ["🔩 Santexnika"],
+            ["⚡ Elektr"],
+            ["🔥 Payvandlash"],
+            ["🔨 Boshqa xizmat"],
+        ],
+        resize_keyboard=True,
     )
-    return kb
 
-def admin_menu():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add(
-        KeyboardButton("👨‍🔧 Уста қўшиш"),
-        KeyboardButton("👨‍🔧 Уста ўчириш"),
-        KeyboardButton("👤 Диспетчер қўшиш"),
-        KeyboardButton("👤 Диспетчер ўчириш"),
-        KeyboardButton("📊 Умумий статистика"),
-        KeyboardButton("📈 Кунлик ҳисобот"),
-        KeyboardButton("📈 Ҳафталик ҳисобот"),
-        KeyboardButton("📈 Ойлик ҳисобот"),
-        KeyboardButton("📢 Барчага хабар"),
-        KeyboardButton("📢 Усталарга хабар"),
-        KeyboardButton("📢 Мижозларга хабар"),
-        KeyboardButton("📥 Excel ҳисобот"),
-        KeyboardButton("🏠 Асосий меню")
+
+# =========================================================
+# START
+# =========================================================
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.message:
+        return
+
+    await update.message.reply_text(
+        "👋 Assalomu alaykum!\n\n"
+        "🏠 USTA 24 xizmatiga xush kelibsiz!\n\n"
+        "🔧 Uy va ofis uchun ustalar xizmatlari.\n"
+        "📍 Andijon shahri\n\n"
+        "Kerakli xizmatni tanlang:",
+        reply_markup=main_menu(),
     )
-    return kb
 
-def buyurtma_holat_inline(buyurtma_id):
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("🟡 Қабул қилиш", callback_data=f"qabul_{buyurtma_id}"),
-        InlineKeyboardButton("🚫 Рад этиш", callback_data=f"rad_{buyurtma_id}"),
-        InlineKeyboardButton("🔵 Ишга киришиш", callback_data=f"ishla_{buyurtma_id}"),
-        InlineKeyboardButton("✅ Якунлаш", callback_data=f"yakun_{buyurtma_id}"),
-        InlineKeyboardButton("❌ Бекор қилиш", callback_data=f"bekor_{buyurtma_id}"),
-        InlineKeyboardButton("🔄 Бошқа устага", callback_data=f"change_{buyurtma_id}")
+
+# =========================================================
+# DISPATCHER COMMAND
+# =========================================================
+
+async def dispatcher(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.message:
+        return
+
+    user = update.effective_user
+
+    if not user:
+        return
+
+    if user.id != ADMIN_ID:
+        await update.message.reply_text(
+            "❌ Sizda dispetcher paneliga kirish huquqi yo‘q."
+        )
+        return
+
+    await update.message.reply_text(
+        "🛠 USTA 24 DISPETCHER PANELI\n\n"
+        "Kerakli bo‘limni tanlang:",
+        reply_markup=dispatcher_menu(),
     )
-    return kb
 
-def usta_tanlash_inline(ustalar, buyurtma_id):
-    kb = InlineKeyboardMarkup(row_width=1)
-    for u in ustalar:
-        holat = "🟢" if u[6] else "🔴"
-        kb.add(InlineKeyboardButton(
-            f"{holat} {u[1]} - {u[2]} ⭐{u[4]}",
-            callback_data=f"assign_{u[0]}_{buyurtma_id}"
-        ))
-    return kb
 
-def baholash_inline(buyurtma_id, usta_id):
-    kb = InlineKeyboardMarkup(row_width=5)
-    for i in range(1, 6):
-        kb.insert(InlineKeyboardButton(str(i), callback_data=f"baho_{i}_{buyurtma_id}_{usta_id}"))
-    return kb
+# =========================================================
+# CHAT ID
+# =========================================================
 
-def tolov_inline(buyurtma_id):
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        InlineKeyboardButton("💳 Тўлов қилиш", callback_data=f"pay_{buyurtma_id}"),
-        InlineKeyboardButton("📄 Чекни кўриш", callback_data=f"check_{buyurtma_id}")
+async def chat_id_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.message:
+        return
+
+    chat = update.effective_chat
+
+    if not chat:
+        return
+
+    await update.message.reply_text(
+        f"🆔 Chat ID: {chat.id}\n\n"
+        f"📌 Chat turi: {chat.type}\n"
+        f"📌 Nomi: {chat.title or '-'}"
     )
-    return kb
 
-# ============ ҲОЛАТЛАР ============
-from aiogram.dispatcher.filters.state import State, StatesGroup
 
-class BuyurtmaState(StatesGroup):
-    ism = State()
-    telefon = State()
-    manzil = State()
-    matn = State()
-    narx = State()
+# =========================================================
+# SERVICES
+# =========================================================
 
-class AdminState(StatesGroup):
-    usta_qoshish_ism = State()
-    usta_qoshish_mutaxassislik = State()
-    usta_qoshish_telefon = State()
-    usta_qoshish_tg = State()
-    dispetcher_qoshish = State()
-    xabar_yuborish = State()
-    usta_ochirish = State()
-    dispetcher_ochirish = State()
+async def services(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.message:
+        return
 
-class BahoState(StatesGroup):
-    buyurtma_id = State()
-    izoh = State()
+    await update.message.reply_text(
+        "🛠 USTA 24 XIZMATLARI\n\n"
+        "🪑 Mebel yig‘ish\n"
+        "🔧 Mebel ta’mirlash\n"
+        "🍽 Oshxona mebellari\n"
+        "🚪 Shkaf yig‘ish va ta’mirlash\n"
+        "🛏 Krovat yig‘ish\n"
+        "🪑 Stol va stul yig‘ish\n"
+        "📦 Mebelni qismlarga ajratish va yig‘ish\n"
+        "🚚 Mebel tashish\n"
+        "🏠 Uy ko‘chirish\n"
+        "🚛 Yuk tashish\n"
+        "🔩 Santexnika\n"
+        "⚡ Elektr\n"
+        "🔥 Payvandlash\n"
+        "🔨 Boshqa xizmat\n\n"
+        "📞 Buyurtma berish uchun "
+        "«🛠 Usta chaqirish» tugmasini bosing.",
+        reply_markup=main_menu(),
+    )
 
-class ChangeUstaState(StatesGroup):
-    buyurtma_id = State()
-    usta_tanlash = State()
 
-class XabarState(StatesGroup):
-    matn = State()
+# =========================================================
+# CONTACT
+# =========================================================
 
-class EslatmaState(StatesGroup):
-    matn = State()
-    vaqt = State()
+async def contact(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.message:
+        return
 
-class OtzyvState(StatesGroup):
-    matn = State()
+    await update.message.reply_text(
+        "📞 USTA 24\n\n"
+        "☎️ Telefon: +998 77 069 00 03\n\n"
+        "📍 Andijon shahri\n\n"
+        "🛠 Usta chaqirish uchun "
+        "«🛠 Usta chaqirish» tugmasini bosing.",
+        reply_markup=main_menu(),
+    )
 
-class GeolocationState(StatesGroup):
-    manzil = State()
 
-class TolovState(StatesGroup):
-    summa = State()
-    tur = State()
+# =========================================================
+# START ORDER
+# =========================================================
 
-# ============ СТАРТ ============
-@dp.message_handler(Command("start"))
-async def start(message: types.Message):
-    user_id = message.from_user.id
-    if user_id in ADMIN_IDS:
-        await message.answer("👑 *Админ панелига хуш келибсиз!*", reply_markup=admin_menu(), parse_mode="Markdown")
-    elif user_id in DISPATCHER_IDS:
-        await message.answer("🎧 *Диспетчер панелига хуш келибсиз!*", reply_markup=dispatcher_menu(), parse_mode="Markdown")
+async def start_order(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not update.message:
+        return
+
+    user = update.effective_user
+
+    if not user:
+        return
+
+    user_id = user.id
+
+    customer = await db_get_customer(user_id)
+
+    if customer and customer["name"] and customer["phone"]:
+
+        user_orders[user_id] = {
+            "step": "service",
+            "name": customer["name"],
+            "phone": customer["phone"],
+        }
+
+        await update.message.reply_text(
+            f"👋 Салом, {customer['name']}!\n\n"
+            "Сизни эсладик. ✅\n"
+            "Исм ва телефон рақамингиз сақланган.\n\n"
+            "3️⃣ Қандай хизмат керак?",
+            reply_markup=service_menu(),
+        )
+
+        return
+
+    user_orders[user_id] = {
+        "step": "name"
+    }
+
+    await update.message.reply_text(
+        "📝 Буюртма бериш\n\n"
+        "1️⃣ Мижоз исмингизни ёзинг:"
+    )
+
+
+# =========================================================
+# FORMAT ORDER
+# =========================================================
+
+def format_order(order, status_text=None):
+
+    if isinstance(order, dict):
+
+        order_id = order.get("id", "-")
+        name = order.get("name", "-")
+        phone = order.get("phone", "-")
+        service = order.get("service", "-")
+        address = order.get("address", "-")
+        description = order.get("description", "-")
+        master = order.get("master_name") or "-"
+        status = order.get("status", "-")
+
     else:
-        usta = db.usta_get(tg_id=user_id)
-        if usta:
-            await message.answer(f"👨‍🔧 *Хуш келибсиз, уста {usta[1]}!*", reply_markup=usta_menu(), parse_mode="Markdown")
-        else:
-            await message.answer(
-                "👤 *Мижоз ботига хуш келибсиз!*\n\n"
-                "📝 Буюртма бериш учун тугмани босинг.",
-                reply_markup=mijoz_menu(),
-                parse_mode="Markdown"
+
+        order_id = order["id"]
+        name = order["customer_name"] or "-"
+        phone = order["phone"] or "-"
+        service = order["service"] or "-"
+        address = order["address"] or "-"
+        description = order["description"] or "-"
+        master = order["master_name"] or "-"
+        status = order["status"]
+
+    status_display = status_text or status
+
+    return (
+        f"🔢 Буюртма: #{order_id}\n"
+        f"👤 Мижоз: {name}\n"
+        f"📞 Телефон: {phone}\n"
+        f"🛠 Хизмат: {service}\n"
+        f"📍 Манзил: {address}\n"
+        f"📝 Изоҳ: {description}\n"
+        f"👨‍🔧 Уста: {master}\n"
+        f"📌 Ҳолат: {status_display}\n"
+        "──────────────"
+    )
+
+
+# =========================================================
+# SHOW ORDERS
+# =========================================================
+
+async def show_orders(
+    update: Update,
+    status=None,
+    title="📋 BUYURTMALAR",
+):
+    if not update.message:
+        return
+
+    user = update.effective_user
+
+    if not user or user.id != ADMIN_ID:
+        await update.message.reply_text(
+            "❌ Бу бўлим фақат админ учун."
+        )
+        return
+
+    db_orders = await db_get_orders(status)
+
+    if db_orders:
+
+        text = f"{title}\n\n"
+
+        for order in db_orders:
+            text += format_order(order) + "\n"
+
+        await update.message.reply_text(
+            text,
+            reply_markup=dispatcher_menu(),
+        )
+
+        return
+
+    result = []
+
+    for order_id, data in memory_orders.items():
+
+        if status is None or data["status"] == status:
+
+            result.append({
+                "id": order_id,
+                "name": data["order"].get("name"),
+                "phone": data["order"].get("phone"),
+                "service": data["order"].get("service"),
+                "address": data["order"].get("address"),
+                "description": data["order"].get("description"),
+                "master_name": data.get("master_name"),
+                "status": data["status"],
+            })
+
+    if not result:
+
+        await update.message.reply_text(
+            "📭 Ҳозирча буюртмалар йўқ.",
+            reply_markup=dispatcher_menu(),
+        )
+
+        return
+
+    text = f"{title}\n\n"
+
+    for order in reversed(result):
+        text += format_order(order) + "\n"
+
+    await update.message.reply_text(
+        text,
+        reply_markup=dispatcher_menu(),
+    )
+
+
+# =========================================================
+# STATISTICS
+# =========================================================
+
+async def show_statistics(update: Update):
+
+    if not update.message:
+        return
+
+    user = update.effective_user
+
+    if not user or user.id != ADMIN_ID:
+        await update.message.reply_text(
+            "❌ Бу бўлим фақат админ учун."
+        )
+        return
+
+    stats = await db_statistics()
+
+    if not db_pool:
+
+        stats = {
+            "total": len(memory_orders),
+            "open": 0,
+            "accepted": 0,
+            "in_progress": 0,
+            "completed": 0,
+            "cancelled": 0,
+            "rejected": 0,
+        }
+
+        for data in memory_orders.values():
+
+            status = data["status"]
+
+            if status in stats:
+                stats[status] += 1
+
+    await update.message.reply_text(
+        "📊 USTA 24 СТАТИСТИКА\n\n"
+        f"📋 Жами: {stats['total']}\n\n"
+        f"🆕 Янги: {stats['open']}\n"
+        f"🟡 Қабул қилинган: {stats['accepted']}\n"
+        f"🔵 Иш жараёнида: {stats['in_progress']}\n"
+        f"✅ Якунланган: {stats['completed']}\n"
+        f"❌ Бекор қилинган: {stats['cancelled']}\n"
+        f"🚫 Рад этилган: {stats['rejected']}",
+        reply_markup=dispatcher_menu(),
+    )
+
+
+# =========================================================
+# DISPATCHER MENU
+# =========================================================
+
+async def handle_dispatcher_menu(
+    update,
+    text,
+):
+
+    user = update.effective_user
+
+    if not user or user.id != ADMIN_ID:
+        await update.message.reply_text(
+            "❌ Бу меню фақат админ учун."
+        )
+        return True
+
+    mapping = {
+        "🆕 Yangi buyurtmalar": (
+            "open",
+            "🆕 YANGI BUYURTMALAR"
+        ),
+        "🟡 Qabul qilingan": (
+            "accepted",
+            "🟡 QABUL QILINGAN"
+        ),
+        "🔵 Ish jarayonida": (
+            "in_progress",
+            "🔵 ISH JARAYONIDA"
+        ),
+        "✅ Yakunlangan": (
+            "completed",
+            "✅ YAKUNLANGAN"
+        ),
+        "❌ Bekor qilingan": (
+            "cancelled",
+            "❌ BEKOR QILINGAN"
+        ),
+        "🚫 Rad etilgan": (
+            "rejected",
+            "🚫 RAD ETILGAN"
+        ),
+        "📋 Barcha buyurtmalar": (
+            None,
+            "📋 BARCHA BUYURTMALAR"
+        ),
+    }
+
+    if text == "📊 Statistika":
+        await show_statistics(update)
+        return True
+
+    if text in mapping:
+
+        status, title = mapping[text]
+
+        await show_orders(
+            update,
+            status,
+            title,
+        )
+
+        return True
+
+    return False
+
+
+# =========================================================
+# SEND ORDER TO MASTERS
+# =========================================================
+
+async def send_order_to_masters(
+    update,
+    context,
+    order,
+):
+
+    global memory_order_counter
+
+    user = update.effective_user
+
+    if not user:
+        raise RuntimeError(
+            "Telegram user topilmadi!"
+        )
+
+    username = (
+        f"@{user.username}"
+        if user.username
+        else "username yo‘q"
+    )
+
+    order["customer_id"] = user.id
+    order["username"] = username
+
+    await db_save_customer(
+        user.id,
+        order.get("name"),
+        order.get("phone"),
+        username,
+    )
+
+    db_order_id = await db_create_order(order)
+
+    if db_order_id:
+
+        order_id = db_order_id
+
+    else:
+
+        memory_order_counter += 1
+        order_id = memory_order_counter
+
+    memory_orders[order_id] = {
+        "customer_id": user.id,
+        "status": "open",
+        "master_id": None,
+        "master_name": None,
+        "order": order.copy(),
+    }
+
+    message = (
+        "🆕 YANGI BUYURTMA\n\n"
+        f"🔢 Буюртма: #{order_id}\n\n"
+        f"👤 Мижоз: {order.get('name', '-')}\n"
+        f"📞 Телефон: {order.get('phone', '-')}\n"
+        f"🛠 Хизмат: {order.get('service', '-')}\n"
+        f"📍 Манзил: {order.get('address', '-')}\n"
+        f"📝 Изоҳ: {order.get('description', '-')}\n\n"
+        f"👤 Telegram: {username}\n"
+        f"🆔 User ID: {user.id}\n\n"
+        "🚨 Уста буюртмани қабул қилиш учун "
+        "тугмани босинг."
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Қабул қилиш",
+                    callback_data=f"accept:{order_id}",
+                ),
+                InlineKeyboardButton(
+                    "❌ Рад этиш",
+                    callback_data=f"reject:{order_id}",
+                ),
+            ]
+        ]
+    )
+
+    sent = await context.bot.send_message(
+        chat_id=MASTERS_GROUP_ID,
+        text=message,
+        reply_markup=keyboard,
+    )
+
+    memory_orders[order_id]["message_id"] = sent.message_id
+
+    logger.info(
+        "✅ Buyurtma #%s ustalar guruhiga yuborildi.",
+        order_id,
+    )
+
+    return order_id
+
+
+# =========================================================
+# CALLBACK
+# =========================================================
+
+async def order_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+
+    if not query:
+        return
+
+    await query.answer()
+
+    data = query.data or ""
+
+    if ":" not in data:
+        return
+
+    action, order_id_text = data.split(":", 1)
+
+    try:
+        order_id = int(order_id_text)
+    except ValueError:
+        await query.answer(
+            "❌ Buyurtma raqami noto‘g‘ri.",
+            show_alert=True,
+        )
+        return
+
+    order_data = memory_orders.get(order_id)
+
+    # -----------------------------------------------------
+    # DATABASE'DAN ORDER
+    # -----------------------------------------------------
+
+    if not order_data:
+
+        row = await db_get_order(order_id)
+
+        if row:
+
+            order_data = {
+                "customer_id": row["customer_id"],
+                "status": row["status"],
+                "master_id": row["master_id"],
+                "master_name": row["master_name"],
+                "order": {
+                    "name": row["customer_name"],
+                    "phone": row["phone"],
+                    "service": row["service"],
+                    "address": row["address"],
+                    "description": row["description"],
+                },
+            }
+
+            memory_orders[order_id] = order_data
+
+    if not order_data:
+
+        await query.answer(
+            "❌ Buyurtma topilmadi.",
+            show_alert=True,
+        )
+        return
+
+    master = query.from_user
+
+    master_name = (
+        f"@{master.username}"
+        if master.username
+        else master.full_name
+    )
+
+    order_info = order_data["order"]
+
+    # =====================================================
+    # ACCEPT
+    # =====================================================
+
+    if action == "accept":
+
+        if order_data["status"] != "open":
+
+            await query.answer(
+                "⚠️ Бу буюртмани бошқа уста қабул қилган.",
+                show_alert=True,
             )
-
-@dp.message_handler(lambda msg: msg.text == "🏠 Асосий меню")
-async def back_to_main(message: types.Message):
-    await start(message)
-
-# ============ 1. МИЖОЗ: БУЮРТМА БЕРИШ ============
-@dp.message_handler(lambda msg: msg.text in ["📝 Буюртма бериш", "🔁 Қайта буюртма бериш"])
-async def order_start(message: types.Message, state: FSMContext):
-    if message.text == "🔁 Қайта буюртма бериш":
-        mijoz = db.mijoz_get(message.from_user.id)
-        if mijoz:
-            await state.update_data(ism=mijoz[2], telefon=mijoz[3], manzil=mijoz[4] or "")
-            await message.answer(f"🔄 *Қайта буюртма*\n\n📝 Буюртма матнини киритинг:", parse_mode="Markdown")
-            await BuyurtmaState.matn.set()
             return
-    
-    await message.answer("👤 *Исмингизни киритинг:*", parse_mode="Markdown")
-    await BuyurtmaState.ism.set()
 
-@dp.message_handler(state=BuyurtmaState.ism)
-async def get_ism(message: types.Message, state: FSMContext):
-    await state.update_data(ism=message.text)
-    await message.answer("📱 *Телефон рақамингиз:*", parse_mode="Markdown")
-    await BuyurtmaState.telefon.set()
+        order_data["status"] = "accepted"
+        order_data["master_id"] = master.id
+        order_data["master_name"] = master_name
 
-@dp.message_handler(state=BuyurtmaState.telefon)
-async def get_telefon(message: types.Message, state: FSMContext):
-    await state.update_data(telefon=message.text)
-    await message.answer("📍 *Манзилингиз (ёки 'йўқ' ёзинг):*", parse_mode="Markdown")
-    await BuyurtmaState.manzil.set()
+        await db_update_status(
+            order_id,
+            "accepted",
+            master.id,
+            master_name,
+        )
 
-@dp.message_handler(state=BuyurtmaState.manzil)
-async def get_manzil(message: types.Message, state: FSMContext):
-    manzil = None if message.text.lower() == 'йўқ' else message.text
-    await state.update_data(manzil=manzil)
-    await message.answer("📝 *Буюртма матнини киритинг:*", parse_mode="Markdown")
-    await BuyurtmaState.matn.set()
+        group_text = (
+            "🟡 BUYURTMA QABUL QILINDI\n\n"
+            f"🔢 Buyurtma: #{order_id}\n\n"
+            f"👤 Mijoz: {order_info.get('name', '-')}\n"
+            f"📞 Telefon: {order_info.get('phone', '-')}\n"
+            f"🛠 Xizmat: {order_info.get('service', '-')}\n"
+            f"📍 Manzil: {order_info.get('address', '-')}\n"
+            f"📝 Izoh: {order_info.get('description', '-')}\n\n"
+            f"👨‍🔧 Qabul qilgan usta: {master_name}\n\n"
+            "🔵 Ishni boshlash uchun tugmani bosing."
+        )
 
-@dp.message_handler(state=BuyurtmaState.matn)
-async def get_matn(message: types.Message, state: FSMContext):
-    await state.update_data(matn=message.text)
-    await message.answer("💰 *Нархни киритинг (сўмда, номаълум бўлса 0 ёзинг):*", parse_mode="Markdown")
-    await BuyurtmaState.narx.set()
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "🔵 Ishni boshlash",
+                        callback_data=f"startjob:{order_id}",
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Bekor qilish",
+                        callback_data=f"cancel:{order_id}",
+                    ),
+                ]
+            ]
+        )
 
-@dp.message_handler(state=BuyurtmaState.narx)
-async def get_narx(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    try:
-        narx = float(message.text)
-    except:
-        narx = 0
-    
-    db.mijoz_qoshish(
-        tg_id=message.from_user.id,
-        ism=data['ism'],
-        telefon=data['telefon'],
-        manzil=data['manzil']
-    )
-    
-    buyurtma_id = db.buyurtma_qoshish(
-        mijoz_tg_id=message.from_user.id,
-        matn=data['matn'],
-        manzil=data['manzil'],
-        narx=narx
-    )
-    
-    holat_map = {
-        'yangi': '🆕 Янги',
-        'qabul_qilingan': '🟡 Қабул қилинган',
-        'ishda': '🔵 Иш жараёнида',
-        'yakunlangan': '✅ Якунланган',
-        'bekor_qilingan': '❌ Бекор қилинган',
-        'rad_etilgan': '🚫 Рад этилган'
-    }
-    
-    txt = (
-        f"🆔 *Буюртма №{buyurtma_id}*\n\n"
-        f"👤 Мижоз: {data['ism']}\n"
-        f"📱 Телефон: {data['telefon']}\n"
-        f"📍 Манзил: {data['manzil'] or 'Кўрсатилмаган'}\n"
-        f"📝 Матн: {data['matn']}\n"
-        f"💰 Нарх: {narx} сўм\n"
-        f"📌 Ҳолат: {holat_map['yangi']}\n"
-        f"📅 Вақт: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
-    )
-    
-    await message.answer(txt, parse_mode="Markdown")
-    await state.finish()
-    
-    # Диспетчерга хабар
-    for disp_id in DISPATCHER_IDS:
+        await query.edit_message_text(
+            group_text,
+            reply_markup=keyboard,
+        )
+
         try:
-            await bot.send_message(
-                disp_id,
-                f"🔔 *ЯНГИ БУЮРТМА!*\n\n{txt}\n\n⬇️ Уста танлаш:",
-                reply_markup=usta_tanlash_inline(db.usta_top(), buyurtma_id),
-                parse_mode="Markdown"
+            await context.bot.send_message(
+                chat_id=master.id,
+                text=(
+                    "🟡 BUYURTMA SIZGA BIRIKTIRILDI\n\n"
+                    f"🔢 Buyurtma: #{order_id}\n"
+                    f"👤 Mijoz: {order_info.get('name', '-')}\n"
+                    f"📞 Telefon: {order_info.get('phone', '-')}\n"
+                    f"🛠 Xizmat: {order_info.get('service', '-')}\n"
+                    f"📍 Manzil: {order_info.get('address', '-')}\n\n"
+                    f"📝 Изоҳ:\n{order_info.get('description', '-')}\n\n"
+                    "🔵 «Ишни бошлаш» тугмасини босинг."
+                ),
             )
-        except:
-            pass
-    
-    # Усталарга хабар (онлайнларга)
-    for usta in db.usta_top():
+        except Exception:
+            logger.warning(
+                "Ustaga shaxsiy xabar yuborilmadi.",
+                exc_info=True,
+            )
+
         try:
-            await bot.send_message(
-                usta[1],
-                f"🔔 *Янги буюртма!*\n\n🆔 #{buyurtma_id}\n📝 {data['matn'][:50]}...\n💰 {narx} сўм\n\n✅ Қабул қилиш учун /accept_{buyurtma_id}",
-                parse_mode="Markdown"
+            await context.bot.send_message(
+                chat_id=order_data["customer_id"],
+                text=(
+                    f"🟡 Буюртмангиз №{order_id} қабул қилинди.\n\n"
+                    f"👨‍🔧 Уста: {master_name}\n\n"
+                    "Тез орада уста ишни бошлайди.\n\n"
+                    "☎️ USTA 24\n"
+                    "+998 77 069 00 03"
+                ),
             )
-        except:
-            pass
-    
-    await message.answer("✅ *Буюртма қабул қилинди!*")
+        except Exception:
+            logger.warning(
+                "Mijozga qabul xabari yuborilmadi.",
+                exc_info=True,
+            )
 
-# ============ 2. МИЖОЗ: БУЮРТМАЛАРИМ ============
-@dp.message_handler(lambda msg: msg.text == "📋 Буюртмаларим")
-async def my_orders(message: types.Message):
-    orders = db.buyurtma_mijoz(message.from_user.id)
-    if not orders:
-        await message.answer("📭 *Сизда ҳеч қандай буюртма йўқ.*", parse_mode="Markdown")
         return
-    
-    holat_map = {
-        'yangi': '🆕 Янги',
-        'qabul_qilingan': '🟡 Қабул қилинган',
-        'ishda': '🔵 Иш жараёнида',
-        'yakunlangan': '✅ Якунланган',
-        'bekor_qilingan': '❌ Бекор қилинган',
-        'rad_etilgan': '🚫 Рад этилган'
-    }
-    
-    txt = "📋 *Сизнинг буюртмаларингиз:*\n\n"
-    for o in orders[:10]:
-        txt += f"🆔 #{o[0]} | {holat_map.get(o[6], o[6])}\n"
-        txt += f"📝 {o[4][:40]}...\n\n"
-    
-    if len(orders) > 10:
-        txt += f"\n... ва яна {len(orders)-10} та"
-    
-    await message.answer(txt, parse_mode="Markdown")
 
-# ============ 3. МИЖОЗ: МАЪЛУМОТЛАРИМ ============
-@dp.message_handler(lambda msg: msg.text == "👤 Менинг маълумотларим")
-async def my_info(message: types.Message):
-    mijoz = db.mijoz_get(message.from_user.id)
-    if not mijoz:
-        await message.answer("⚠️ *Маълумотларингиз топилмади.*", parse_mode="Markdown")
-        return
-    
-    # Устани баҳолаш статистикаси
-    orders = db.buyurtma_mijoz(message.from_user.id)
-    yakunlangan = len([o for o in orders if o[6] == 'yakunlangan'])
-    
-    txt = (
-        f"👤 *Сизнинг маълумотларингиз:*\n\n"
-        f"📛 Исм: {mijoz[2]}\n"
-        f"📱 Телефон: {mijoz[3]}\n"
-        f"📍 Манзил: {mijoz[4] or 'Кўрсатилмаган'}\n"
-        f"📝 Изоҳ: {mijoz[5] or 'Йўқ'}\n"
-        f"📋 Жами буюртма: {len(orders)} та\n"
-        f"✅ Якунланган: {yakunlangan} та"
-    )
-    await message.answer(txt, parse_mode="Markdown")
+    # =====================================================
+    # START JOB
+    # =====================================================
 
-# ============ 4. МИЖОЗ: ИЗОҲ ҚЎШИШ ============
-@dp.message_handler(lambda msg: msg.text == "📝 Изоҳ")
-async def add_izoh_start(message: types.Message, state: FSMContext):
-    await message.answer("📝 *Изоҳ матнини киритинг:*", parse_mode="Markdown")
-    await AdminState.usta_qoshish_tg.set()
+    if action == "startjob":
 
-@dp.message_handler(state=AdminState.usta_qoshish_tg)
-async def add_izoh_end(message: types.Message, state: FSMContext):
-    db.mijoz_izoh_update(message.from_user.id, message.text)
-    await message.answer("✅ *Изоҳ сақланди!*", parse_mode="Markdown")
-    await state.finish()
+        if order_data["status"] != "accepted":
 
-# ============ 5. МИЖОЗ: УСТАЛАР ============
-@dp.message_handler(lambda msg: msg.text == "👨‍🔧 Усталар")
-async def show_ustalar(message: types.Message):
-    ustalar = db.usta_barcha()
-    if not ustalar:
-        await message.answer("📭 *Усталар мавжуд эмас.*", parse_mode="Markdown")
-        return
-    
-    txt = "👨‍🔧 *Усталар рўйхати:*\n\n"
-    for u in ustalar[:10]:
-        holat = "🟢 Онлайн" if u[6] else "🔴 Банд"
-        txt += f"📛 {u[1]}\n🔧 {u[2]}\n⭐ {u[4]} | 🏆 {u[5]} та\n📌 {holat}\n\n"
-    
-    if len(ustalar) > 10:
-        txt += f"\n... ва яна {len(ustalar)-10} та уста"
-    
-    await message.answer(txt, parse_mode="Markdown")
-
-# ============ 6. МИЖОЗ: БАҲОЛАШ ============
-@dp.message_handler(lambda msg: msg.text == "⭐ Баҳолаш")
-async def baholash_start(message: types.Message, state: FSMContext):
-    await message.answer("🆔 *Баҳолаш учун буюртма рақамини киритинг:*", parse_mode="Markdown")
-    await BahoState.buyurtma_id.set()
-
-@dp.message_handler(state=BahoState.buyurtma_id)
-async def baholash_get_order(message: types.Message, state: FSMContext):
-    try:
-        buyurtma_id = int(message.text)
-        order = db.buyurtma_get(buyurtma_id)
-        if not order or order[1] != message.from_user.id or order[6] != 'yakunlangan':
-            await message.answer("⚠️ *Буюртма топилмади ёки ҳали якунланмаган.*", parse_mode="Markdown")
-            await state.finish()
+            await query.answer(
+                "⚠️ Buyurtma ish boshlash holatida emas.",
+                show_alert=True,
+            )
             return
-        await state.update_data(buyurtma_id=buyurtma_id, usta_id=order[2])
-        await message.answer(
-            "⭐ *Баҳо беринг (1-5):*",
-            reply_markup=baholash_inline(buyurtma_id, order[2]),
-            parse_mode="Markdown"
-        )
-        await BahoState.izoh.set()
-    except:
-        await message.answer("⚠️ *Буюртма рақамини киритинг!*", parse_mode="Markdown")
 
-@dp.callback_query_handler(lambda c: c.data.startswith("baho_"), state=BahoState.izoh)
-async def baholash_set(callback: types.CallbackQuery, state: FSMContext):
-    _, baho, buyurtma_id, usta_id = callback.data.split("_")
-    baho = int(baho)
-    buyurtma_id = int(buyurtma_id)
-    usta_id = int(usta_id)
-    
-    await callback.message.answer("💬 *Изоҳ қолдиринг (ёки 'йўқ' ёзинг):*", parse_mode="Markdown")
-    
-    @dp.message_handler(state=BahoState.izoh)
-    async def baholash_izoh(message: types.Message, state: FSMContext):
-        izoh = message.text if message.text.lower() != 'йўқ' else None
-        db.baho_qoshish(buyurtma_id, callback.from_user.id, usta_id, baho, izoh)
-        await message.answer(f"✅ *Рахмат! Сиз {baho} ★ бердингиз.*", parse_mode="Markdown")
-        await state.finish()
+        if order_data.get("master_id") != master.id:
 
-# ============ 7. МИЖОЗ: ОТЗЫВ (БАҲО ВА ИЗОҲ) ============
-@dp.message_handler(lambda msg: msg.text == "💬 Отзыв қолдириш")
-async def otzyv_start(message: types.Message, state: FSMContext):
-    await message.answer("🆔 *Отзыв қолдириш учун буюртма рақамини киритинг:*", parse_mode="Markdown")
-    await BahoState.buyurtma_id.set()
-
-# ============ 8. МИЖОЗ: ГЕОЛОКАЦИЯ ============
-@dp.message_handler(lambda msg: msg.text == "📍 Геолокация")
-async def geolocation_start(message: types.Message):
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("📍 Жойлашувни юбориш", request_location=True))
-    await message.answer("📍 *Жойлашувингизни юборинг ёки манзилни ёзинг:*", reply_markup=kb, parse_mode="Markdown")
-
-@dp.message_handler(content_types=['location'])
-async def geolocation_get(message: types.Message):
-    location = message.location
-    await message.answer(
-        f"📍 *Жойлашув қабул қилинди!*\n"
-        f"🌐 Latitude: {location.latitude}\n"
-        f"🌐 Longitude: {location.longitude}\n\n"
-        f"🗺 Google Maps: https://maps.google.com/?q={location.latitude},{location.longitude}",
-        parse_mode="Markdown"
-    )
-
-# ============ 9. МИЖОЗ: ОНЛАЙН ТЎЛОВ ============
-@dp.message_handler(lambda msg: msg.text == "💳 Онлайн тўлов")
-async def online_tolov_start(message: types.Message):
-    orders = db.buyurtma_mijoz(message.from_user.id)
-    yakunlangan = [o for o in orders if o[6] == 'yakunlangan']
-    
-    if not yakunlangan:
-        await message.answer("📭 *Тўлов қилиш учун якунланган буюртмалар йўқ.*", parse_mode="Markdown")
-        return
-    
-    kb = InlineKeyboardMarkup(row_width=1)
-    for o in yakunlangan:
-        kb.add(InlineKeyboardButton(
-            f"💳 #{o[0]} - {o[5] or 0} сўм",
-            callback_data=f"pay_{o[0]}"
-        ))
-    
-    await message.answer("💳 *Тўлов қилиш учун буюртмани танланг:*", reply_markup=kb, parse_mode="Markdown")
-
-@dp.callback_query_handler(lambda c: c.data.startswith("pay_"))
-async def online_tolov_pay(callback: types.CallbackQuery):
-    buyurtma_id = int(callback.data.split("_")[1])
-    order = db.buyurtma_get(buyurtma_id)
-    
-    if not order:
-        await callback.message.edit_text("⚠️ *Буюртма топилмади.*", parse_mode="Markdown")
-        return
-    
-    summa = float(order[5] or 0)
-    if summa == 0:
-        await callback.message.edit_text("⚠️ *Бу буюртма бепул!*", parse_mode="Markdown")
-        return
-    
-    # Тўлов жараёни
-    tolov_id = db.tolov_qoshish(buyurtma_id, summa, 'online')
-    
-    await callback.message.edit_text(
-        f"💳 *Тўлов маълумотлари:*\n\n"
-        f"🆔 Буюртма: #{buyurtma_id}\n"
-        f"💰 Сумма: {summa} сўм\n"
-        f"📌 Ҳолат: КУТИЛМОҚДА\n\n"
-        f"Тўловни тасдиқлаш учун /confirm_{tolov_id}",
-        parse_mode="Markdown"
-    )
-
-@dp.message_handler(lambda msg: msg.text.startswith("/confirm_"))
-async def confirm_tolov(message: types.Message):
-    tolov_id = int(message.text.split("_")[1])
-    db.tolov_holat_update(tolov_id, 'тўланди')
-    await message.answer("✅ *Тўлов тасдиқланди! Рахмат.*", parse_mode="Markdown")
-
-# ============ 10. МИЖОЗ: ЭСЛАТМА ============
-@dp.message_handler(lambda msg: msg.text == "🔔 Эслатма")
-async def eslatma_start(message: types.Message, state: FSMContext):
-    await message.answer("📝 *Эслатма матнини киритинг:*", parse_mode="Markdown")
-    await EslatmaState.matn.set()
-
-@dp.message_handler(state=EslatmaState.matn)
-async def eslatma_matn(message: types.Message, state: FSMContext):
-    await state.update_data(matn=message.text)
-    await message.answer("⏰ *Вақтни киритинг (DD.MM.YYYY HH:MM):*", parse_mode="Markdown")
-    await EslatmaState.vaqt.set()
-
-@dp.message_handler(state=EslatmaState.vaqt)
-async def eslatma_vaqt(message: types.Message, state: FSMContext):
-    try:
-        vaqt = datetime.strptime(message.text, "%d.%m.%Y %H:%M")
-        data = await state.get_data()
-        db.eslatma_qoshish(message.from_user.id, data['matn'], vaqt)
-        await message.answer(f"✅ *Эслатма сақланди!*\n\n📝 {data['matn']}\n⏰ {vaqt.strftime('%d.%m.%Y %H:%M')}", parse_mode="Markdown")
-        await state.finish()
-    except:
-        await message.answer("⚠️ *Вақт формати хато! DD.MM.YYYY HH:MM*", parse_mode="Markdown")
-
-# ============ 11. МИЖОЗ: ДИСПЕТЧЕРГА МУРОЖААТ ============
-@dp.message_handler(lambda msg: msg.text == "📞 Диспетчерга мурожаат")
-async def contact_dispatcher(message: types.Message):
-    if DISPATCHER_IDS:
-        txt = "📞 *Диспетчер билан боғланиш:*\n\n"
-        for d in DISPATCHER_IDS:
-            try:
-                user = await bot.get_chat(d)
-                txt += f"👤 {user.full_name}\n"
-            except:
-                txt += f"👤 ID: {d}\n"
-        await message.answer(txt, parse_mode="Markdown")
-    else:
-        await message.answer("📞 *Диспетчер ҳозирча мавжуд эмас. Кейинроқ уриниб кўринг.*", parse_mode="Markdown")
-
-# ============ 12. УСТА: ПРОФИЛЬ ============
-@dp.message_handler(lambda msg: msg.text == "👨‍🔧 Менинг профилим")
-async def usta_profile(message: types.Message):
-    usta = db.usta_get(tg_id=message.from_user.id)
-    if not usta:
-        await message.answer("⚠️ *Сиз уста эмассиз.*", parse_mode="Markdown")
-        return
-    
-    holat = "🟢 Онлайн" if usta[6] else "🔴 Банд"
-    baho = db.baho_get_usta(usta[0])
-    
-    txt = (
-        f"👨‍🔧 *Уста профили*\n\n"
-        f"📛 Исм: {usta[1]}\n"
-        f"🔧 Ихтисос: {usta[2]}\n"
-        f"📱 Телефон: {usta[3]}\n"
-        f"⭐ Рейтинг: {usta[4]:.1f}\n"
-        f"📊 Баҳолар: {baho[1] or 0} та\n"
-        f"🏆 Бажарган: {usta[5]} та\n"
-        f"📌 Ҳолат: {holat}"
-    )
-    await message.answer(txt, parse_mode="Markdown")
-
-# ============ 13. УСТА: СТАТИСТИКА ============
-@dp.message_handler(lambda msg: msg.text == "📊 Менинг статистикам")
-async def usta_statistika(message: types.Message):
-    usta = db.usta_get(tg_id=message.from_user.id)
-    if not usta:
-        await message.answer("⚠️ *Сиз уста эмассиз.*", parse_mode="Markdown")
-        return
-    
-    orders = db.buyurtma_usta(usta[0])
-    holat_count = {}
-    for o in orders:
-        holat_count[o[6]] = holat_count.get(o[6], 0) + 1
-    
-    # Даромад
-    daromad = 0
-    for o in orders:
-        if o[6] == 'yakunlangan' and o[5]:
-            daromad += float(o[5])
-    
-    txt = (
-        f"📊 *Уста статистикаси*\n\n"
-        f"🏆 Бажарган: {usta[5]} та\n"
-        f"⭐ Рейтинг: {usta[4]:.1f}\n"
-        f"💰 Даромад: {daromad:,.0f} сўм\n"
-        f"📋 Жами буюртма: {len(orders)} та\n"
-        f"🆕 Янги: {holat_count.get('yangi', 0)} та\n"
-        f"🟡 Қабул: {holat_count.get('qabul_qilingan', 0)} та\n"
-        f"🔵 Ишда: {holat_count.get('ishda', 0)} та\n"
-        f"✅ Якун: {holat_count.get('yakunlangan', 0)} та"
-    )
-    await message.answer(txt, parse_mode="Markdown")
-
-# ============ 14. УСТА: ЭНГ КЎП БАЖАРГАНЛАР ============
-@dp.message_handler(lambda msg: msg.text == "🏆 Энг кўп буюртма бажарган усталар")
-async def usta_top_bajargan(message: types.Message):
-    ustalar = db.usta_top_bajargan()
-    if not ustalar:
-        await message.answer("📭 *Усталар мавжуд эмас.*", parse_mode="Markdown")
-        return
-    
-    txt = "🏆 *Энг кўп буюртма бажарган усталар:*\n\n"
-    for i, u in enumerate(ustalar, 1):
-        holat = "🟢" if u[6] else "🔴"
-        txt += f"{i}. {holat} {u[1]}\n🔧 {u[2]} | ⭐{u[4]:.1f} | 🏆{u[5]} та\n\n"
-    
-    await message.answer(txt, parse_mode="Markdown")
-
-# ============ 15. УСТА: ДАРОМАД ============
-@dp.message_handler(lambda msg: msg.text == "💰 Даромад")
-async def usta_daromad(message: types.Message):
-    usta = db.usta_get(tg_id=message.from_user.id)
-    if not usta:
-        await message.answer("⚠️ *Сиз уста эмассиз.*", parse_mode="Markdown")
-        return
-    
-    orders = db.buyurtma_usta(usta[0])
-    daromad = 0
-    yakunlangan = 0
-    
-    for o in orders:
-        if o[6] == 'yakunlangan':
-            yakunlangan += 1
-            if o[5]:
-                daromad += float(o[5])
-    
-    txt = (
-        f"💰 *Даромад ҳисоботи*\n\n"
-        f"👨‍🔧 Уста: {usta[1]}\n"
-        f"🏆 Бажарган: {yakunlangan} та\n"
-        f"💰 Жами даромад: {daromad:,.0f} сўм\n"
-        f"📊 Ўртача нарх: {daromad/yakunlangan:,.0f} сўм" if yakunlangan > 0 else "📊 Ўртача нарх: 0 сўм"
-    )
-    await message.answer(txt, parse_mode="Markdown")
-
-# ============ 16. УСТА: ОНЛАЙН/БАНД ============
-@dp.message_handler(lambda msg: msg.text in ["🟢 Онлайн", "🔴 Банд"])
-async def usta_holat_update(message: types.Message):
-    usta = db.usta_get(tg_id=message.from_user.id)
-    if not usta:
-        await message.answer("⚠️ *Сиз уста эмассиз.*", parse_mode="Markdown")
-        return
-    
-    holat = True if message.text == "🟢 Онлайн" else False
-    db.usta_holat_update(message.from_user.id, holat)
-    await message.answer(f"✅ *Ҳолат янгиланди: {message.text}*", parse_mode="Markdown")
-
-# ============ 17. УСТА: МЕНИНГ БУЮРТМАЛАРИМ ============
-@dp.message_handler(lambda msg: msg.text == "📋 Менинг буюртмаларим")
-async def usta_orders(message: types.Message):
-    usta = db.usta_get(tg_id=message.from_user.id)
-    if not usta:
-        await message.answer("⚠️ *Сиз уста эмассиз.*", parse_mode="Markdown")
-        return
-    
-    orders = db.buyurtma_usta(usta[0])
-    if not orders:
-        await message.answer("📭 *Сизга ҳеч қандай буюртма бириктирилмаган.*", parse_mode="Markdown")
-        return
-    
-    holat_map = {
-        'yangi': '🆕 Янги',
-        'qabul_qilingan': '🟡 Қабул қилинган',
-        'ishda': '🔵 Иш жараёнида',
-        'yakunlangan': '✅ Якунланган',
-        'bekor_qilingan': '❌ Бекор қилинган',
-        'rad_etilgan': '🚫 Рад этилган'
-    }
-    
-    txt = "📋 *Менинг буюртмаларим:*\n\n"
-    for o in orders[:10]:
-        txt += f"🆔 #{o[0]} | {holat_map.get(o[6], o[6])}\n"
-        txt += f"📝 {o[4][:40]}...\n\n"
-    
-    if len(orders) > 10:
-        txt += f"\n... ва яна {len(orders)-10} та"
-    
-    # Ҳолатни ўзгартириш учун тугмачалар
-    if orders:
-        first_order = orders[0]
-        if first_order[6] in ['qabul_qilingan', 'ishda']:
-            txt += "\n\n⬇️ Ҳолатни ўзгартириш:"
-            await message.answer(txt, reply_markup=buyurtma_holat_inline(first_order[0]), parse_mode="Markdown")
-        else:
-            await message.answer(txt, parse_mode="Markdown")
-
-# ============ 18. УСТА: БУЮРТМА ҚАБУЛ ҚИЛИШ ============
-@dp.message_handler(lambda msg: msg.text.startswith("/accept_"))
-async def usta_accept_order(message: types.Message):
-    usta = db.usta_get(tg_id=message.from_user.id)
-    if not usta:
-        await message.answer("⚠️ *Сиз уста эмассиз.*", parse_mode="Markdown")
-        return
-    
-    buyurtma_id = int(message.text.split("_")[1])
-    order = db.buyurtma_get(buyurtma_id)
-    if not order:
-        await message.answer("⚠️ *Буюртма топилмади.*", parse_mode="Markdown")
-        return
-    
-    if order[6] != 'yangi':
-        await message.answer("⚠️ *Буюртма аллақачон қабул қилинган.*", parse_mode="Markdown")
-        return
-    
-    db.buyurtma_update_holat(buyurtma_id, 'qabul_qilingan', usta[0])
-    await message.answer(f"✅ *Буюртма #{buyurtma_id} қабул қилинди!*", parse_mode="Markdown")
-
-# ============ 19. ДИСПЕТЧЕР: БУЮРТМАЛАР ============
-@dp.message_handler(lambda msg: msg.text in [
-    "📋 Барча буюртмалар", "🆕 Янги буюртмалар", 
-    "🟡 Қабул қилинганлар", "🔵 Ишдаги буюртмалар", 
-    "✅ Якунланганлар", "❌ Бекор қилинганлар", "🚫 Рад этилганлар"
-])
-async def dispatcher_orders(message: types.Message):
-    if message.from_user.id not in DISPATCHER_IDS and message.from_user.id not in ADMIN_IDS:
-        return
-    
-    holat_map = {
-        "📋 Барча буюртмалар": None,
-        "🆕 Янги буюртмалар": "yangi",
-        "🟡 Қабул қилинганлар": "qabul_qilingan",
-        "🔵 Ишдаги буюртмалар": "ishda",
-        "✅ Якунланганлар": "yakunlangan",
-        "❌ Бекор қилинганлар": "bekor_qilingan",
-        "🚫 Рад этилганлар": "rad_etilgan"
-    }
-    
-    orders = db.buyurtma_all(holat_map.get(message.text))
-    if not orders:
-        await message.answer("📭 *Буюртмалар топилмади.*", parse_mode="Markdown")
-        return
-    
-    holat_emoji = {
-        'yangi': '🆕',
-        'qabul_qilingan': '🟡',
-        'ishda': '🔵',
-        'yakunlangan': '✅',
-        'bekor_qilingan': '❌',
-        'rad_etilgan': '🚫'
-    }
-    
-    txt = f"📋 *{message.text}:*\n\n"
-    for o in orders[:10]:
-        mijoz = db.mijoz_get(o[1])
-        mijoz_ism = mijoz[2] if mijoz else "Noma'lum"
-        txt += f"{holat_emoji.get(o[6], '📌')} #{o[0]} | {mijoz_ism}\n"
-        txt += f"📝 {o[4][:30]}...\n\n"
-    
-    if len(orders) > 10:
-        txt += f"\n... ва яна {len(orders)-10} та"
-    
-    await message.answer(txt, parse_mode="Markdown")
-
-# ============ 20. ДИСПЕТЧЕР: СТАТИСТИКА ============
-@dp.message_handler(lambda msg: msg.text == "📊 Статистика")
-async def dispatcher_statistika(message: types.Message):
-    if message.from_user.id not in DISPATCHER_IDS and message.from_user.id not in ADMIN_IDS:
-        return
-    
-    stats = db.buyurtma_statistika()
-    mijozlar = db.mijoz_all()
-    ustalar = db.usta_barcha()
-    
-    if stats:
-        txt = (
-            f"📊 *Умумий статистика:*\n\n"
-            f"👤 Мижозлар: {len(mijozlar)} та\n"
-            f"👨‍🔧 Усталар: {len(ustalar)} та\n"
-            f"📋 Жами буюртма: {stats[0]} та\n"
-            f"🆕 Янги: {stats[1]} та\n"
-            f"🟡 Қабул қилинган: {stats[2]} та\n"
-            f"🔵 Ишда: {stats[3]} та\n"
-            f"✅ Якунланган: {stats[4]} та\n"
-            f"❌ Бекор қилинган: {stats[5]} та\n"
-            f"🚫 Рад этилган: {stats[6]} та"
-        )
-        await message.answer(txt, parse_mode="Markdown")
-
-# ============ 21. ДИСПЕТЧЕР: УСТАЛАР СТАТИСТИКАСИ ============
-@dp.message_handler(lambda msg: msg.text == "👨‍🔧 Усталар статистикаси")
-async def dispatcher_usta_statistika(message: types.Message):
-    if message.from_user.id not in DISPATCHER_IDS and message.from_user.id not in ADMIN_IDS:
-        return
-    
-    ustalar = db.usta_barcha()
-    if not ustalar:
-        await message.answer("📭 *Усталар мавжуд эмас.*", parse_mode="Markdown")
-        return
-    
-    txt = "👨‍🔧 *Усталар статистикаси:*\n\n"
-    for u in ustalar[:10]:
-        holat = "🟢" if u[6] else "🔴"
-        txt += f"{holat} {u[1]}\n🔧 {u[2]} | ⭐{u[4]:.1f} | 🏆{u[5]} та\n\n"
-    
-    if len(ustalar) > 10:
-        txt += f"\n... ва яна {len(ustalar)-10} та уста"
-    
-    await message.answer(txt, parse_mode="Markdown")
-
-# ============ 22. ДИСПЕТЧЕР: ОЙЛИК ҲИСОБОТ ============
-@dp.message_handler(lambda msg: msg.text == "📈 Ойлик ҳисобот")
-async def dispatcher_oylik_hisobot(message: types.Message):
-    if message.from_user.id not in DISPATCHER_IDS and message.from_user.id not in ADMIN_IDS:
-        return
-    
-    stats = db.buyurtma_oylik_statistika()
-    if not stats:
-        await message.answer("📭 *Маълумотлар мавжуд эмас.*", parse_mode="Markdown")
-        return
-    
-    txt = "📈 *Ойлик ҳисобот:*\n\n"
-    for s in stats:
-        oy = s[0].strftime('%B %Y') if s[0] else "Noma'lum"
-        txt += f"📅 {oy}: {s[1]} та буюртма, ✅ {s[2]} та якунланган\n"
-    
-    await message.answer(txt, parse_mode="Markdown")
-
-# ============ 23. АДМИН: УСТА ҚЎШИШ ============
-@dp.message_handler(lambda msg: msg.text == "👨‍🔧 Уста қўшиш" and msg.from_user.id in ADMIN_IDS)
-async def admin_add_usta_start(message: types.Message, state: FSMContext):
-    await message.answer("👨‍🔧 *Уста маълумотлари*\n\n📛 Исми:", parse_mode="Markdown")
-    await AdminState.usta_qoshish_ism.set()
-
-@dp.message_handler(state=AdminState.usta_qoshish_ism)
-async def admin_add_usta_ism(message: types.Message, state: FSMContext):
-    await state.update_data(ism=message.text)
-    await message.answer("🔧 *Мутахассислиги:*", parse_mode="Markdown")
-    await AdminState.usta_qoshish_mutaxassislik.set()
-
-@dp.message_handler(state=AdminState.usta_qoshish_mutaxassislik)
-async def admin_add_usta_mutaxassislik(message: types.Message, state: FSMContext):
-    await state.update_data(mutaxassislik=message.text)
-    await message.answer("📱 *Телефон рақами:*", parse_mode="Markdown")
-    await AdminState.usta_qoshish_telefon.set()
-
-@dp.message_handler(state=AdminState.usta_qoshish_telefon)
-async def admin_add_usta_telefon(message: types.Message, state: FSMContext):
-    await state.update_data(telefon=message.text)
-    await message.answer("🆔 *Telegram IDси:*", parse_mode="Markdown")
-    await AdminState.usta_qoshish_tg.set()
-
-@dp.message_handler(state=AdminState.usta_qoshish_tg)
-async def admin_add_usta_tg(message: types.Message, state: FSMContext):
-    try:
-        tg_id = int(message.text)
-        data = await state.get_data()
-        db.usta_qoshish(tg_id, data['ism'], data['mutaxassislik'], data['telefon'])
-        await message.answer(
-            f"✅ *Уста қўшилди!*\n\n"
-            f"📛 {data['ism']}\n"
-            f"🔧 {data['mutaxassislik']}\n"
-            f"📱 {data['telefon']}\n"
-            f"🆔 {tg_id}",
-            parse_mode="Markdown"
-        )
-        await state.finish()
-    except:
-        await message.answer("⚠️ *Тўғри ID киритинг!*", parse_mode="Markdown")
-
-# ============ 24. АДМИН: УСТА ЎЧИРИШ ============
-@dp.message_handler(lambda msg: msg.text == "👨‍🔧 Уста ўчириш" and msg.from_user.id in ADMIN_IDS)
-async def admin_delete_usta_start(message: types.Message):
-    ustalar = db.usta_barcha()
-    if not ustalar:
-        await message.answer("📭 *Усталар мавжуд эмас.*", parse_mode="Markdown")
-        return
-    
-    kb = InlineKeyboardMarkup(row_width=1)
-    for u in ustalar:
-        kb.add(InlineKeyboardButton(
-            f"❌ {u[1]} - {u[2]} (ID:{u[1]})",
-            callback_data=f"del_usta_{u[1]}"
-        ))
-    await message.answer("👨‍🔧 *Ўчириш учун устани танланг:*", reply_markup=kb, parse_mode="Markdown")
-
-@dp.callback_query_handler(lambda c: c.data.startswith("del_usta_"))
-async def admin_delete_usta(callback: types.CallbackQuery):
-    tg_id = int(callback.data.split("_")[2])
-    db.usta_ochirish(tg_id)
-    await callback.message.edit_text(f"✅ *Уста ўчирилди!*", parse_mode="Markdown")
-
-# ============ 25. АДМИН: ДИСПЕТЧЕР ҚЎШИШ ============
-@dp.message_handler(lambda msg: msg.text == "👤 Диспетчер қўшиш" and msg.from_user.id in ADMIN_IDS)
-async def admin_add_dispatcher_start(message: types.Message, state: FSMContext):
-    await message.answer("🆔 *Диспетчернинг Telegram IDсини киритинг:*", parse_mode="Markdown")
-    await AdminState.dispetcher_qoshish.set()
-
-@dp.message_handler(state=AdminState.dispetcher_qoshish)
-async def admin_add_dispatcher(message: types.Message, state: FSMContext):
-    try:
-        disp_id = int(message.text)
-        if disp_id not in DISPATCHER_IDS:
-            DISPATCHER_IDS.append(disp_id)
-        await message.answer(f"✅ *Диспетчер қўшилди!* (ID: {disp_id})", parse_mode="Markdown")
-        await state.finish()
-    except:
-        await message.answer("⚠️ *Тўғри ID киритинг!*", parse_mode="Markdown")
-
-# ============ 26. АДМИН: ДИСПЕТЧЕР ЎЧИРИШ ============
-@dp.message_handler(lambda msg: msg.text == "👤 Диспетчер ўчириш" and msg.from_user.id in ADMIN_IDS)
-async def admin_delete_dispatcher(message: types.Message):
-    if not DISPATCHER_IDS:
-        await message.answer("📭 *Диспетчерлар мавжуд эмас.*", parse_mode="Markdown")
-        return
-    
-    kb = InlineKeyboardMarkup(row_width=1)
-    for d in DISPATCHER_IDS:
-        try:
-            user = await bot.get_chat(d)
-            name = user.full_name
-        except:
-            name = f"ID:{d}"
-        kb.add(InlineKeyboardButton(f"❌ {name}", callback_data=f"del_disp_{d}"))
-    await message.answer("👤 *Ўчириш учун диспетчерни танланг:*", reply_markup=kb, parse_mode="Markdown")
-
-@dp.callback_query_handler(lambda c: c.data.startswith("del_disp_"))
-async def admin_delete_dispatcher_callback(callback: types.CallbackQuery):
-    disp_id = int(callback.data.split("_")[2])
-    if disp_id in DISPATCHER_IDS:
-        DISPATCHER_IDS.remove(disp_id)
-    await callback.message.edit_text(f"✅ *Диспетчер ўчирилди!* (ID: {disp_id})", parse_mode="Markdown")
-
-# ============ 27. АДМИН: УМУМИЙ СТАТИСТИКА ============
-@dp.message_handler(lambda msg: msg.text == "📊 Умумий статистика" and msg.from_user.id in ADMIN_IDS)
-async def admin_statistika(message: types.Message):
-    stats = db.buyurtma_statistika()
-    mijozlar = db.mijoz_all()
-    ustalar = db.usta_barcha()
-    
-    # Тўловлар статистикаси
-    db.cursor.execute("SELECT COUNT(*), SUM(summa) FROM tolovlar WHERE holat='тўланди'")
-    tolov_stats = db.cursor.fetchone()
-    
-    txt = (
-        f"👑 *Админ статистикаси:*\n\n"
-        f"👤 Мижозлар: {len(mijozlar)} та\n"
-        f"👨‍🔧 Усталар: {len(ustalar)} та\n"
-        f"📋 Жами буюртма: {stats[0]} та\n"
-        f"🆕 Янги: {stats[1]} та\n"
-        f"🟡 Қабул қилинган: {stats[2]} та\n"
-        f"🔵 Ишда: {stats[3]} та\n"
-        f"✅ Якунланган: {stats[4]} та\n"
-        f"❌ Бекор қилинган: {stats[5]} та\n"
-        f"🚫 Рад этилган: {stats[6]} та\n"
-        f"💳 Тўловлар: {tolov_stats[0] or 0} та\n"
-        f"💰 Жами тўлов: {tolov_stats[1] or 0:,.0f} сўм"
-    )
-    await message.answer(txt, parse_mode="Markdown")
-
-# ============ 28. АДМИН: КУНЛИК ҲИСОБОТ ============
-@dp.message_handler(lambda msg: msg.text == "📈 Кунлик ҳисобот" and msg.from_user.id in ADMIN_IDS)
-async def admin_kunlik_hisobot(message: types.Message):
-    today = datetime.now().date()
-    orders = db.buyurtma_all()
-    
-    bugungi = [o for o in orders if o[8].date() == today]
-    txt = (
-        f"📈 *Кунлик ҳисобот*\n\n"
-        f"📅 {today.strftime('%d.%m.%Y')}\n"
-        f"📋 Жами буюртма: {len(bugungi)} та\n"
-    )
-    
-    holatlar = {}
-    for o in bugungi:
-        holatlar[o[6]] = holatlar.get(o[6], 0) + 1
-    
-    for h, c in holatlar.items():
-        emoji = {'yangi':'🆕','qabul_qilingan':'🟡','ishda':'🔵','yakunlangan':'✅','bekor_qilingan':'❌','rad_etilgan':'🚫'}
-        txt += f"{emoji.get(h, '📌')} {h}: {c} та\n"
-    
-    await message.answer(txt, parse_mode="Markdown")
-
-# ============ 29. АДМИН: ҲАФТАЛИК ҲИСОБОТ ============
-@dp.message_handler(lambda msg: msg.text == "📈 Ҳафталик ҳисобот" and msg.from_user.id in ADMIN_IDS)
-async def admin_haftalik_hisobot(message: types.Message):
-    hafta = datetime.now().date() - timedelta(days=7)
-    orders = db.buyurtma_all()
-    
-    haftalik = [o for o in orders if o[8].date() >= hafta]
-    
-    txt = (
-        f"📈 *Ҳафталик ҳисобот*\n\n"
-        f"📅 {hafta.strftime('%d.%m')} - {datetime.now().strftime('%d.%m.%Y')}\n"
-        f"📋 Жами буюртма: {len(haftalik)} та\n"
-    )
-    
-    holatlar = {}
-    for o in haftalik:
-        holatlar[o[6]] = holatlar.get(o[6], 0) + 1
-    
-    for h, c in holatlar.items():
-        emoji = {'yangi':'🆕','qabul_qilingan':'🟡','ishda':'🔵','yakunlangan':'✅','bekor_qilingan':'❌','rad_etilgan':'🚫'}
-        txt += f"{emoji.get(h, '📌')} {h}: {c} та\n"
-    
-    await message.answer(txt, parse_mode="Markdown")
-
-# ============ 30. АДМИН: ОЙЛИК ҲИСОБОТ ============
-@dp.message_handler(lambda msg: msg.text == "📈 Ойлик ҳисобот" and msg.from_user.id in ADMIN_IDS)
-async def admin_oylik_hisobot(message: types.Message):
-    oy = datetime.now().date() - timedelta(days=30)
-    orders = db.buyurtma_all()
-    
-    oylik = [o for o in orders if o[8].date() >= oy]
-    
-    txt = (
-        f"📈 *Ойлик ҳисобот*\n\n"
-        f"📅 {oy.strftime('%d.%m')} - {datetime.now().strftime('%d.%m.%Y')}\n"
-        f"📋 Жами буюртма: {len(oylik)} та\n"
-    )
-    
-    holatlar = {}
-    for o in oylik:
-        holatlar[o[6]] = holatlar.get(o[6], 0) + 1
-    
-    for h, c in holatlar.items():
-        emoji = {'yangi':'🆕','qabul_qilingan':'🟡','ishda':'🔵','yakunlangan':'✅','bekor_qilingan':'❌','rad_etilgan':'🚫'}
-        txt += f"{emoji.get(h, '📌')} {h}: {c} та\n"
-    
-    await message.answer(txt, parse_mode="Markdown")
-
-# ============ 31. АДМИН: ХАБАР ЮБОРИШ ============
-@dp.message_handler(lambda msg: msg.text in ["📢 Барчага хабар", "📢 Усталарга хабар", "📢 Мижозларга хабар"] and msg.from_user.id in ADMIN_IDS)
-async def admin_xabar_start(message: types.Message, state: FSMContext):
-    kimgatur = {
-        "📢 Барчага хабар": "all",
-        "📢 Усталарга хабар": "ustalar",
-        "📢 Мижозларга хабар": "mijozlar"
-    }
-    await state.update_data(kimgatur=kimgatur[message.text])
-    await message.answer("📝 *Хабар матнини киритинг:*", parse_mode="Markdown")
-    await AdminState.xabar_yuborish.set()
-
-@dp.message_handler(state=AdminState.xabar_yuborish)
-async def admin_xabar_send(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    matn = message.text
-    kimgatur = data['kimgatur']
-    
-    db.xabar_save(message.from_user.id, kimgatur, matn)
-    
-    count = 0
-    if kimgatur == "all":
-        for m in db.mijoz_all():
-            try:
-                await bot.send_message(m[1], f"📢 *Хабар:*\n\n{matn}", parse_mode="Markdown")
-                count += 1
-            except:
-                pass
-        for u in db.usta_barcha():
-            try:
-                await bot.send_message(u[1], f"📢 *Хабар:*\n\n{matn}", parse_mode="Markdown")
-                count += 1
-            except:
-                pass
-    elif kimgatur == "ustalar":
-        for u in db.usta_barcha():
-            try:
-                await bot.send_message(u[1], f"📢 *Усталарга хабар:*\n\n{matn}", parse_mode="Markdown")
-                count += 1
-            except:
-                pass
-    elif kimgatur == "mijozlar":
-        for m in db.mijoz_all():
-            try:
-                await bot.send_message(m[1], f"📢 *Мижозларга хабар:*\n\n{matn}", parse_mode="Markdown")
-                count += 1
-            except:
-                pass
-    
-    await message.answer(f"✅ *Хабар юборилди!* ({count} та фойдаланувчига)", parse_mode="Markdown")
-    await state.finish()
-
-# ============ 32. АДМИН: EXCEL ҲИСОБОТ ============
-@dp.message_handler(lambda msg: msg.text == "📥 Excel ҳисобот" and msg.from_user.id in ADMIN_IDS)
-async def admin_excel_report(message: types.Message):
-    await message.answer("📥 *Excel ҳисобот тайёрланмоқда...*", parse_mode="Markdown")
-    try:
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill, Alignment
-        
-        wb = Workbook()
-        
-        # 1. Буюртмалар варағи
-        ws1 = wb.active
-        ws1.title = "Буюртмалар"
-        
-        headers = ["ID", "Мижоз", "Телефон", "Уста", "Матн", "Манзил", "Нарх", "Ҳолат", "Вақт"]
-        ws1.append(headers)
-        
-        # Сарлавҳа стили
-        for col in range(1, len(headers)+1):
-            ws1.cell(row=1, column=col).font = Font(bold=True)
-            ws1.cell(row=1, column=col).fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-        
-        orders = db.buyurtma_all()
-        for o in orders:
-            mijoz = db.mijoz_get(o[1])
-            usta = db.usta_get(usta_id=o[2]) if o[2] else None
-            ws1.append([
-                o[0],
-                mijoz[2] if mijoz else "Noma'lum",
-                mijoz[3] if mijoz else "",
-                usta[1] if usta else "Ўтмаган",
-                o[4],
-                o[5] or "",
-                float(o[6]) if o[6] else 0,
-                o[7],
-                o[8].strftime("%d.%m.%Y %H:%M") if o[8] else ""
-            ])
-        
-        # 2. Усталар варағи
-        ws2 = wb.create_sheet("Усталар")
-        ws2.append(["ID", "Исм", "Мутахассислик", "Телефон", "Рейтинг", "Бажарган", "Ҳолат"])
-        for u in db.usta_barcha():
-            ws2.append([
-                u[0], u[1], u[2], u[3], u[4], u[5], "Онлайн" if u[6] else "Банд"
-            ])
-        
-        # 3. Статистика варағи
-        ws3 = wb.create_sheet("Статистика")
-        stats = db.buyurtma_statistika()
-        ws3.append(["Кўрсаткич", "Қиймат"])
-        ws3.append(["Жами буюртма", stats[0]])
-        ws3.append(["Янги", stats[1]])
-        ws3.append(["Қабул қилинган", stats[2]])
-        ws3.append(["Ишда", stats[3]])
-        ws3.append(["Якунланган", stats[4]])
-        ws3.append(["Бекор қилинган", stats[5]])
-        ws3.append(["Рад этилган", stats[6]])
-        
-        filename = f"hisobot_{datetime.now().strftime('%d%m%Y_%H%M')}.xlsx"
-        wb.save(filename)
-        
-        await message.answer_document(
-            open(filename, 'rb'),
-            caption=f"📊 *Ҳисобот {datetime.now().strftime('%d.%m.%Y')}*\n\n"
-                   f"📋 Жами: {stats[0]} та буюртма\n"
-                   f"✅ Якунланган: {stats[4]} та",
-            parse_mode="Markdown"
-        )
-        os.remove(filename)
-    except ImportError:
-        await message.answer("⚠️ *Excel учун openpyxl ўрнатинг: pip install openpyxl*", parse_mode="Markdown")
-    except Exception as e:
-        await message.answer(f"⚠️ *Хатолик: {e}*", parse_mode="Markdown")
-
-# ============ 33. CALLBACK: УСТА ТАНЛАШ ============
-@dp.callback_query_handler(lambda c: c.data.startswith("assign_"))
-async def assign_usta(callback: types.CallbackQuery):
-    _, usta_id, buyurtma_id = callback.data.split("_")
-    usta_id = int(usta_id)
-    buyurtma_id = int(buyurtma_id)
-    
-    db.buyurtma_update_holat(buyurtma_id, 'qabul_qilingan', usta_id)
-    
-    await callback.message.edit_text(
-        f"✅ *Буюртма #{buyurtma_id} устага бириктирилди!*",
-        parse_mode="Markdown"
-    )
-    
-    usta = db.usta_get(usta_id=usta_id)
-    if usta:
-        try:
-            await bot.send_message(
-                usta[1],
-                f"🟡 *Янги буюртма бириктирилди!*\n\n"
-                f"🆔 #{buyurtma_id}\n\n"
-                f"📋 Буюртмани кўриш учун /order_{buyurtma_id}",
-                parse_mode="Markdown"
+            await query.answer(
+                "❌ Bu buyurtma sizga biriktirilmagan.",
+                show_alert=True,
             )
-        except:
-            pass
+            return
 
-# ============ 34. CALLBACK: ҲОЛАТ ЎЗГАРТИРИШ ============
-@dp.callback_query_handler(lambda c: c.data.startswith(("qabul_", "rad_", "ishla_", "yakun_", "bekor_")))
-async def holat_change(callback: types.CallbackQuery):
-    action, buyurtma_id = callback.data.split("_")
-    buyurtma_id = int(buyurtma_id)
-    
-    holat_map = {
-        "qabul": "qabul_qilingan",
-        "rad": "rad_etilgan",
-        "ishla": "ishda",
-        "yakun": "yakunlangan",
-        "bekor": "bekor_qilingan"
-    }
-    
-    holat = holat_map.get(action)
-    if not holat:
-        return
-    
-    order = db.buyurtma_get(buyurtma_id)
-    if not order:
-        await callback.message.edit_text("⚠️ *Буюртма топилмади.*", parse_mode="Markdown")
-        return
-    
-    usta_id = order[2]
-    db.buyurtma_update_holat(buyurtma_id, holat, usta_id)
-    
-    emoji = {
-        "qabul_qilingan": "🟡",
-        "rad_etilgan": "🚫",
-        "ishda": "🔵",
-        "yakunlangan": "✅",
-        "bekor_qilingan": "❌"
-    }
-    
-    await callback.message.edit_text(
-        f"{emoji.get(holat, '📌')} *Буюртма #{buyurtma_id} ҳолати: {holat}*",
-        parse_mode="Markdown"
-    )
-    
-    try:
-        await bot.send_message(
-            order[1],
-            f"📌 *Буюртма #{buyurtma_id} ҳолати:*\n{emoji.get(holat, '📌')} {holat}",
-            parse_mode="Markdown"
+        order_data["status"] = "in_progress"
+
+        await db_update_status(
+            order_id,
+            "in_progress",
         )
-    except:
-        pass
 
-# ============ 35. CALLBACK: БОШҚА УСТАГА ============
-@dp.callback_query_handler(lambda c: c.data.startswith("change_"))
-async def change_usta_start(callback: types.CallbackQuery, state: FSMContext):
-    buyurtma_id = int(callback.data.split("_")[1])
-    await state.update_data(buyurtma_id=buyurtma_id)
-    
-    ustalar = db.usta_top()
-    if not ustalar:
-        await callback.message.edit_text("📭 *Усталар мавжуд эмас.*", parse_mode="Markdown")
-        return
-    
-    await callback.message.edit_text(
-        "🔄 *Бошқа уста танланг:*",
-        reply_markup=usta_tanlash_inline(ustalar, buyurtma_id),
-        parse_mode="Markdown"
-    )
-    await ChangeUstaState.usta_tanlash.set()
+        group_text = (
+            "🔵 ISH JARAYONIDA\n\n"
+            f"🔢 Buyurtma: #{order_id}\n\n"
+            f"👤 Mijoz: {order_info.get('name', '-')}\n"
+            f"📞 Telefon: {order_info.get('phone', '-')}\n"
+            f"🛠 Xizmat: {order_info.get('service', '-')}\n"
+            f"📍 Manzil: {order_info.get('address', '-')}\n"
+            f"📝 Изоҳ: {order_info.get('description', '-')}\n\n"
+            f"👨‍🔧 Уста: {master_name}\n\n"
+            "Иш тугагач, «✅ Ишни якунлаш»ни босинг."
+        )
 
-@dp.callback_query_handler(lambda c: c.data.startswith("assign_"), state=ChangeUstaState.usta_tanlash)
-async def change_usta_assign(callback: types.CallbackQuery, state: FSMContext):
-    _, usta_id, buyurtma_id = callback.data.split("_")
-    usta_id = int(usta_id)
-    buyurtma_id = int(buyurtma_id)
-    
-    db.buyurtma_usta_change(buyurtma_id, usta_id)
-    await callback.message.edit_text(
-        f"🔄 *Буюртма #{buyurtma_id} бошқа устага берилди!*",
-        parse_mode="Markdown"
-    )
-    await state.finish()
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "✅ Ишни якунлаш",
+                        callback_data=f"complete:{order_id}",
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Бекор қилиш",
+                        callback_data=f"cancel:{order_id}",
+                    ),
+                ]
+            ]
+        )
 
-# ============ 36. БУЮРТМАНИ КЎРИШ (/order_123) ============
-@dp.message_handler(lambda msg: msg.text.startswith("/order_"))
-async def view_order(message: types.Message):
-    buyurtma_id = int(message.text.split("_")[1])
-    order = db.buyurtma_get(buyurtma_id)
-    if not order:
-        await message.answer("⚠️ *Буюртма топилмади.*", parse_mode="Markdown")
-        return
-    
-    holat_map = {
-        'yangi': '🆕 Янги',
-        'qabul_qilingan': '🟡 Қабул қилинган',
-        'ishda': '🔵 Иш жараёнида',
-        'yakunlangan': '✅ Якунланган',
-        'bekor_qilingan': '❌ Бекор қилинган',
-        'rad_etilgan': '🚫 Рад этилган'
-    }
-    
-    mijoz = db.mijoz_get(order[1])
-    usta = db.usta_get(usta_id=order[2]) if order[2] else None
-    
-    txt = (
-        f"🆔 *Буюртма №{buyurtma_id}*\n\n"
-        f"👤 Мижоз: {mijoz[2] if mijoz else 'Noma'lum'}\n"
-        f"📱 Телефон: {mijoz[3] if mijoz else 'Noma'lum'}\n"
-        f"📍 Манзил: {order[5] or 'Кўрсатилмаган'}\n"
-        f"📝 Матн: {order[4]}\n"
-        f"💰 Нарх: {order[6] or 0} сўм\n"
-        f"📌 Ҳолат: {holat_map.get(order[7], order[7])}\n"
-        f"👨‍🔧 Уста: {usta[1] if usta else 'Танланмаган'}\n"
-        f"📅 Вақт: {order[8].strftime('%d.%m.%Y %H:%M') if order[8] else ''}"
-    )
-    
-    # Ҳолатни ўзгартириш учун тугмачалар
-    if order[7] in ['qabul_qilingan', 'ishda']:
-        await message.answer(txt, reply_markup=buyurtma_holat_inline(buyurtma_id), parse_mode="Markdown")
-    else:
-        await message.answer(txt, parse_mode="Markdown")
+        await query.edit_message_text(
+            group_text,
+            reply_markup=keyboard,
+        )
 
-# ============ 37. ЭСЛАТМАЛАРНИ ТЕКШИРИШ ============
-async def check_eslatmalar():
-    while True:
         try:
-            now = datetime.now()
-            eslatmalar = db.eslatma_get_vaqt(now)
-            
-            for e in eslatmalar:
-                try:
-                    await bot.send_message(
-                        e[1],
-                        f"🔔 *Эслатма!*\n\n📝 {e[2]}",
-                        parse_mode="Markdown"
-                    )
-                    db.eslatma_ochirish(e[0])
-                except:
-                    pass
-            
-            await asyncio.sleep(30)
-        except:
-            await asyncio.sleep(60)
+            await context.bot.send_message(
+                chat_id=order_data["customer_id"],
+                text=(
+                    f"🔵 Буюртмангиз №{order_id} бўйича иш бошланди.\n\n"
+                    f"👨‍🔧 Уста: {master_name}\n\n"
+                    "☎️ USTA 24\n"
+                    "+998 77 069 00 03"
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "Mijozga ish boshlandi xabari yuborilmadi.",
+                exc_info=True,
+            )
 
-# ============ 38. ТЕСТ УСТАЛАР ============
-async def on_startup():
-    print("🚀 Бот ишга тушди!")
-    if not db.usta_barcha():
-        db.usta_qoshish(0, "Бобур", "Компьютер таъмирлаш", "+998901234567")
-        db.usta_qoshish(0, "Жамшид", "Электр монтаж", "+998901234568")
-        db.usta_qoshish(0, "Дилшод", "Сантехник", "+998901234569")
-        print("✅ Тест усталар қўшилди!")
-    asyncio.create_task(check_eslatmalar())
+        return
 
-# ============ 39. ИШГА ТУШИРИШ ============
+    # =====================================================
+    # COMPLETE
+    # =====================================================
+
+    if action == "complete":
+
+        if order_data["status"] != "in_progress":
+
+            await query.answer(
+                "⚠️ Buyurtma ish jarayonida emas.",
+                show_alert=True,
+            )
+            return
+
+        if order_data.get("master_id") != master.id:
+
+            await query.answer(
+                "❌ Bu buyurtma sizga biriktirilmagan.",
+                show_alert=True,
+            )
+            return
+
+        order_data["status"] = "completed"
+
+        await db_update_status(
+            order_id,
+            "completed",
+        )
+
+        completed_text = (
+            "✅ ISH YAKUNLANDI\n\n"
+            f"🔢 Buyurtma: #{order_id}\n\n"
+            f"👤 Mijoz: {order_info.get('name', '-')}\n"
+            f"📞 Telefon: {order_info.get('phone', '-')}\n"
+            f"🛠 Xizmat: {order_info.get('service', '-')}\n"
+            f"📍 Manzil: {order_info.get('address', '-')}\n"
+            f"📝 Изоҳ: {order_info.get('description', '-')}\n\n"
+            f"👨‍🔧 Уста: {master_name}\n"
+            "📌 Ҳолат: Якунланди\n\n"
+            "☎️ USTA 24\n"
+            "+998 77 069 00 03"
+        )
+
+        await query.edit_message_text(
+            completed_text
+        )
+
+        try:
+            await context.bot.send_message(
+                chat_id=order_data["customer_id"],
+                text=(
+                    f"✅ Буюртмангиз №{order_id} якунланди.\n\n"
+                    f"👨‍🔧 Уста: {master_name}\n\n"
+                    "Хизмат кўрсатиш ишлари якунланди.\n\n"
+                    "Раҳмат! USTA 24 хизматидан фойдаланганингиз учун.\n\n"
+                    "☎️ USTA 24\n"
+                    "+998 77 069 00 03"
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "Mijozga yakun xabari yuborilmadi.",
+                exc_info=True,
+            )
+
+        return
+
+    # =====================================================
+    # CANCEL
+    # =====================================================
+
+    if action == "cancel":
+
+        if order_data["status"] not in (
+            "accepted",
+            "in_progress",
+        ):
+
+            await query.answer(
+                "⚠️ Bu buyurtmani hozir bekor qilib bo‘lmaydi.",
+                show_alert=True,
+            )
+            return
+
+        if order_data.get("master_id") != master.id:
+
+            await query.answer(
+                "❌ Bu buyurtma sizga biriktirilmagan.",
+                show_alert=True,
+            )
+            return
+
+        order_data["status"] = "cancelled"
+
+        await db_update_status(
+            order_id,
+            "cancelled",
+        )
+
+        cancelled_text = (
+            "❌ BUYURTMA BEKOR QILINDI\n\n"
+            f"🔢 Buyurtma: #{order_id}\n\n"
+            f"👤 Mijoz: {order_info.get('name', '-')}\n"
+            f"📞 Telefon: {order_info.get('phone', '-')}\n"
+            f"🛠 Xizmat: {order_info.get('service', '-')}\n"
+            f"📍 Manzil: {order_info.get('address', '-')}\n"
+            f"📝 Изоҳ: {order_info.get('description', '-')}\n\n"
+            f"👨‍🔧 Уста: {master_name}\n"
+            "❌ Ҳолат: Бекор қилинди\n\n"
+            "☎️ USTA 24\n"
+            "+998 77 069 00 03"
+        )
+
+        await query.edit_message_text(
+            cancelled_text
+        )
+
+        try:
+            await context.bot.send_message(
+                chat_id=order_data["customer_id"],
+                text=(
+                    f"❌ Буюртмангиз №{order_id} бекор қилинди.\n\n"
+                    f"👨‍🔧 Уста: {master_name}\n\n"
+                    "Янги буюртма беришингиз мумкин.\n\n"
+                    "☎️ USTA 24\n"
+                    "+998 77 069 00 03"
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "Mijozga bekor xabari yuborilmadi.",
+                exc_info=True,
+            )
+
+        return
+
+    # =====================================================
+    # REJECT
+    # =====================================================
+
+    if action == "reject":
+
+        if order_data["status"] != "open":
+
+            await query.answer(
+                "⚠️ Bu buyurtma allaqachon o‘zgargan.",
+                show_alert=True,
+            )
+            return
+
+        order_data["status"] = "rejected"
+
+        order_data["master_id"] = master.id
+        order_data["master_name"] = master_name
+
+        await db_update_status(
+            order_id,
+            "rejected",
+            master.id,
+            master_name,
+        )
+
+        rejected_text = (
+            "🚫 BUYURTMA RAD ETILDI\n\n"
+            f"🔢 Buyurtma: #{order_id}\n\n"
+            f"👤 Mijoz: {order_info.get('name', '-')}\n"
+            f"📞 Telefon: {order_info.get('phone', '-')}\n"
+            f"🛠 Xizmat: {order_info.get('service', '-')}\n"
+            f"📍 Manzil: {order_info.get('address', '-')}\n"
+            f"📝 Изоҳ: {order_info.get('description', '-')}\n\n"
+            f"🚫 Рад этган уста: {master_name}"
+        )
+
+        await query.edit_message_text(
+            rejected_text
+        )
+
+        try:
+            await context.bot.send_message(
+                chat_id=order_data["customer_id"],
+                text=(
+                    f"⚠️ Буюртмангиз №{order_id} "
+                    "танланган уста томонидан қабул қилинмади.\n\n"
+                    "Бошқа уста топиш учун диспетчер билан "
+                    "боғланишингиз мумкин.\n\n"
+                    "☎️ USTA 24\n"
+                    "+998 77 069 00 03"
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "Mijozga rad xabari yuborilmadi.",
+                exc_info=True,
+            )
+
+        return
+
+
+# =========================================================
+# MESSAGE HANDLER
+# =========================================================
+
+async def handle_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return
+
+    user = update.effective_user
+
+    if not user:
+        return
+
+    user_id = user.id
+
+    text = (
+        update.message.text or ""
+    ).strip()
+
+    # -----------------------------------------------------
+    # DISPATCHER
+    # -----------------------------------------------------
+
+    dispatcher_buttons = {
+        "🆕 Yangi buyurtmalar",
+        "🟡 Qabul qilingan",
+        "🔵 Ish jarayonida",
+        "✅ Yakunlangan",
+        "❌ Bekor qilingan",
+        "🚫 Rad etilgan",
+        "📋 Barcha buyurtmalar",
+        "📊 Statistika",
+    }
+
+    if text in dispatcher_buttons:
+
+        await handle_dispatcher_menu(
+            update,
+            text,
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # MAIN MENU
+    # -----------------------------------------------------
+
+    if text == "🛠 Usta chaqirish":
+
+        await start_order(
+            update,
+            context,
+        )
+
+        return
+
+    if text == "📋 Xizmatlar":
+
+        await services(
+            update,
+            context,
+        )
+
+        return
+
+    if text == "📞 Aloqa":
+
+        await contact(
+            update,
+            context,
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # ORDER
+    # -----------------------------------------------------
+
+    if user_id not in user_orders:
+
+        await update.message.reply_text(
+            "Iltimos, menyudan kerakli "
+            "xizmatni tanlang.",
+            reply_markup=main_menu(),
+        )
+
+        return
+
+    order = user_orders[user_id]
+    step = order.get("step")
+
+    # -----------------------------------------------------
+    # NAME
+    # -----------------------------------------------------
+
+    if step == "name":
+
+        if not text:
+
+            await update.message.reply_text(
+                "📝 Iltimos, ismingizni yozing:"
+            )
+            return
+
+        order["name"] = text
+        order["step"] = "phone"
+
+        phone_button = KeyboardButton(
+            "📱 Telefon raqamimni yuborish",
+            request_contact=True,
+        )
+
+        keyboard = ReplyKeyboardMarkup(
+            [[phone_button]],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+
+        await update.message.reply_text(
+            "2️⃣ Telefon raqamingizni yuboring:",
+            reply_markup=keyboard,
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # PHONE
+    # -----------------------------------------------------
+
+    if step == "phone":
+
+        if update.message.contact:
+
+            phone = update.message.contact.phone_number
+
+        else:
+
+            phone = text
+
+        if not phone:
+
+            await update.message.reply_text(
+                "📱 Iltimos, telefon raqamingizni yuboring."
+            )
+            return
+
+        order["phone"] = phone
+        order["step"] = "service"
+
+        await update.message.reply_text(
+            "3️⃣ Qanday xizmat kerak?",
+            reply_markup=service_menu(),
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # SERVICE
+    # -----------------------------------------------------
+
+    if step == "service":
+
+        if not text:
+
+            await update.message.reply_text(
+                "Iltimos, xizmat turini tanlang."
+            )
+            return
+
+        order["service"] = text
+        order["step"] = "address"
+
+        await update.message.reply_text(
+            "4️⃣ Манзилингизни ёзинг:\n\n"
+            "Масалан:\n"
+            "Андижон шаҳар, Бобуршоҳ кўчаси, 15-уй"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # ADDRESS
+    # -----------------------------------------------------
+
+    if step == "address":
+
+        if not text:
+
+            await update.message.reply_text(
+                "📍 Iltimos, manzilingizni yozing."
+            )
+            return
+
+        order["address"] = text
+        order["step"] = "description"
+
+        await update.message.reply_text(
+            "5️⃣ Буюртма ҳақида қисқача маълумот ёзинг:\n\n"
+            "Масалан:\n"
+            "Шкаф йиғиш керак.\n"
+            "Ёки:\n"
+            "Уй кўчириш керак, 3-қават."
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # DESCRIPTION
+    # -----------------------------------------------------
+
+    if step == "description":
+
+        if not text:
+
+            await update.message.reply_text(
+                "📝 Iltimos, buyurtma haqida "
+                "qisqacha ma'lumot yozing."
+            )
+            return
+
+        order["description"] = text
+
+        try:
+
+            order_id = await send_order_to_masters(
+                update,
+                context,
+                order,
+            )
+
+        except Exception:
+
+            logger.exception(
+                "❌ USTALAR GURUHIGA YUBORISHDA XATO"
+            )
+
+            await update.message.reply_text(
+                "❌ Буюртмани усталар гуруҳига "
+                "юборишда хатолик юз берди.\n\n"
+                "☎️ +998 77 069 00 03",
+                reply_markup=main_menu(),
+            )
+
+            return
+
+        del user_orders[user_id]
+
+        await update.message.reply_text(
+            f"✅ Буюртмангиз қабул қилинди!\n\n"
+            f"🔢 Буюртма №{order_id}\n\n"
+            "👨‍🔧 Буюртма усталар гуруҳига юборилди.\n"
+            "📞 Тез орада сиз билан боғланишади.\n\n"
+            "☎️ USTA 24: +998 77 069 00 03",
+            reply_markup=main_menu(),
+        )
+
+        return
+
+
+# =========================================================
+# ERROR
+# =========================================================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    logger.error(
+        "BOT XATOSI:",
+        exc_info=context.error,
+    )
+
+
+# =========================================================
+# RUN BOT
+# =========================================================
+
+async def run_bot(application):
+
+    await application.initialize()
+
+    await init_database()
+
+    await application.start()
+
+    await application.updater.start_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+    )
+
+    logger.info(
+        "✅ Telegram polling ishga tushdi."
+    )
+
+    try:
+
+        while True:
+            await asyncio.sleep(3600)
+
+    finally:
+
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+
+    logger.info("==============================")
+    logger.info("USTA 24 BOT START")
+    logger.info(
+        "MASTERS_GROUP_ID = %s",
+        MASTERS_GROUP_ID,
+    )
+    logger.info(
+        "ADMIN_ID = %s",
+        ADMIN_ID,
+    )
+    logger.info(
+        "DATABASE_URL mavjud: %s",
+        bool(DATABASE_URL),
+    )
+    logger.info("==============================")
+
+    application = (
+        Application.builder()
+        .token(TOKEN)
+        .build()
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "dispatcher",
+            dispatcher,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "id",
+            chat_id_command,
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            order_callback,
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.CONTACT,
+            handle_message,
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_message,
+        )
+    )
+
+    application.add_error_handler(
+        error_handler
+    )
+
+    flask_thread = Thread(
+        target=run_flask,
+        daemon=True,
+    )
+
+    flask_thread.start()
+
+    logger.info(
+        "Flask server ishga tushdi."
+    )
+
+    asyncio.run(
+        run_bot(application)
+    )
+
+
 if __name__ == "__main__":
-    from aiogram import executor
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    main()
