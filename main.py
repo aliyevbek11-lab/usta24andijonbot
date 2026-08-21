@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Any
 import asyncpg
 from asyncpg import Pool
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 from telegram import (
     Update,
@@ -40,6 +40,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = os.getenv("ADMIN_ID")
 MASTERS_GROUP_ID = os.getenv("MASTERS_GROUP_ID")
 DISPATCHER_ID = os.getenv("DISPATCHER_ID")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://your-domain.com/webhook
 PORT = int(os.getenv("PORT", 8080))
 
 if not TOKEN:
@@ -54,6 +55,8 @@ if not ADMIN_ID:
 if not MASTERS_GROUP_ID:
     raise RuntimeError("MASTERS_GROUP_ID topilmadi")
 
+if not WEBHOOK_URL:
+    logger.warning("⚠️ WEBHOOK_URL topilmadi, polling rejimida ishlaydi")
 
 ADMIN_ID = int(ADMIN_ID)
 MASTERS_GROUP_ID = int(MASTERS_GROUP_ID)
@@ -77,17 +80,21 @@ logger = logging.getLogger("USTA24")
 
 
 # ============================================================
-# FLASK APP
+# FLASK APP (WEBHOOK uchun)
 # ============================================================
 
 flask_app = Flask(__name__)
+
+# Global application reference
+_application = None
 
 @flask_app.route('/')
 def health():
     return jsonify({
         'status': 'ok',
         'time': datetime.now().isoformat(),
-        'service': 'USTA24 Orders Bot'
+        'service': 'USTA24 Orders Bot',
+        'webhook': bool(WEBHOOK_URL)
     })
 
 @flask_app.route('/stats')
@@ -107,6 +114,87 @@ async def stats():
         'completed_orders': completed,
         'total_masters': masters
     })
+
+@flask_app.route(f'/{TOKEN}', methods=['POST'])
+async def webhook():
+    """Telegram webhook endpoint"""
+    global _application
+    
+    if not _application:
+        return jsonify({'error': 'Bot not initialized'}), 503
+    
+    try:
+        # Get update data
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data'}), 400
+        
+        # Create update object
+        update = Update.de_json(data, _application.bot)
+        
+        # Process update
+        await _application.process_update(update)
+        
+        return jsonify({'status': 'ok'}), 200
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@flask_app.route('/set_webhook', methods=['GET', 'POST'])
+async def set_webhook():
+    """Manually set webhook"""
+    global _application
+    
+    if not _application:
+        return jsonify({'error': 'Bot not initialized'}), 503
+    
+    if not WEBHOOK_URL:
+        return jsonify({'error': 'WEBHOOK_URL not set'}), 400
+    
+    try:
+        webhook_url = f"{WEBHOOK_URL}/{TOKEN}"
+        await _application.bot.set_webhook(webhook_url)
+        return jsonify({
+            'status': 'ok',
+            'webhook_url': webhook_url,
+            'webhook_info': await _application.bot.get_webhook_info()
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@flask_app.route('/delete_webhook', methods=['GET', 'POST'])
+async def delete_webhook():
+    """Delete webhook (switch to polling)"""
+    global _application
+    
+    if not _application:
+        return jsonify({'error': 'Bot not initialized'}), 503
+    
+    try:
+        await _application.bot.delete_webhook()
+        return jsonify({'status': 'ok', 'message': 'Webhook deleted'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@flask_app.route('/webhook_info')
+async def webhook_info():
+    """Get webhook info"""
+    global _application
+    
+    if not _application:
+        return jsonify({'error': 'Bot not initialized'}), 503
+    
+    try:
+        info = await _application.bot.get_webhook_info()
+        return jsonify({
+            'url': info.url,
+            'has_custom_certificate': info.has_custom_certificate,
+            'pending_update_count': info.pending_update_count,
+            'last_error_date': info.last_error_date,
+            'last_error_message': info.last_error_message
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 # ============================================================
@@ -650,7 +738,7 @@ class MessageHelper:
 
 
 # ============================================================
-# BOT HANDLERS
+# BOT HANDLERS (qisqartirilgan, to'liq versiya)
 # ============================================================
 
 class BotHandlers:
@@ -664,6 +752,7 @@ class BotHandlers:
         self.app.add_handler(CommandHandler("help", self.help))
         self.app.add_handler(CommandHandler("back", self.back))
         self.app.add_handler(CommandHandler("stats", self.stats))
+        self.app.add_handler(CommandHandler("take", self.take_order_command))
         
         # Order conversation
         order_conv = ConversationHandler(
@@ -771,8 +860,6 @@ class BotHandlers:
 • 👨‍🔧 Усталарни бошқариш
 • 👤 Диспетчерларни бошқариш
 • 📢 Хабар юбориш
-
-❓ Саволлар: @admin
 """
         await update.message.reply_text(text, parse_mode='Markdown')
 
@@ -787,11 +874,8 @@ class BotHandlers:
         async with Database.pool.acquire() as conn:
             total = await conn.fetchval('SELECT COUNT(*) FROM orders')
             new = await conn.fetchval('SELECT COUNT(*) FROM orders WHERE status = $1', 'new')
-            accepted = await conn.fetchval('SELECT COUNT(*) FROM orders WHERE status = $1', 'accepted')
             in_progress = await conn.fetchval('SELECT COUNT(*) FROM orders WHERE status = $1', 'in_progress')
             completed = await conn.fetchval('SELECT COUNT(*) FROM orders WHERE status = $1', 'completed')
-            cancelled = await conn.fetchval('SELECT COUNT(*) FROM orders WHERE status = $1', 'cancelled')
-            rejected = await conn.fetchval('SELECT COUNT(*) FROM orders WHERE status = $1', 'rejected')
             
             today = datetime.now().date()
             today_orders = await conn.fetchval(
@@ -807,11 +891,8 @@ class BotHandlers:
 
 📋 Жами: {total}
 🆕 Янги: {new}
-🟡 Қабул қилинган: {accepted}
 🔵 Иш жараёнида: {in_progress}
 ✅ Якунланган: {completed}
-❌ Бекор қилинган: {cancelled}
-🚫 Рад этилган: {rejected}
 
 👤 Мижозлар: {users_count}
 👨‍🔧 Усталар: {masters_count}
@@ -820,13 +901,48 @@ class BotHandlers:
 """
         await update.message.reply_text(text, parse_mode='Markdown')
 
+    async def take_order_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/take_ORD-20240101-ABC123 command"""
+        # Extract order number from command
+        command = update.message.text
+        if not command.startswith('/take_'):
+            return
+        
+        order_number = command.replace('/take_', '').strip()
+        master_id = update.effective_user.id
+        
+        # Check if master exists
+        master = await MasterDB.get_by_id(master_id)
+        if not master:
+            await update.message.reply_text("❌ Сиз уста эмассиз!")
+            return
+        
+        if master['is_busy']:
+            await update.message.reply_text("❌ Сиз бандсиз!")
+            return
+        
+        if not master['is_online']:
+            await update.message.reply_text("❌ Сиз офлайнсиз!")
+            return
+        
+        # Assign order
+        await OrderDB.assign_master(order_number, master_id)
+        await update.message.reply_text(f"✅ Буюртма {order_number} сизга бириктирилди!")
+        
+        # Notify user
+        order = await OrderDB.get_by_number(order_number)
+        if order:
+            await update.message.bot.send_message(
+                order['user_id'],
+                f"👨‍🔧 Буюртмангиз {order_number} устага бириктирилди!\n📌 Ҳолат: Иш жараёнида"
+            )
+
     # ==================== ORDER ====================
     
     async def order_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['order_data'] = {}
         await update.message.reply_text(
-            "🛠 **Хизмат турини киритинг:**\n"
-            "Мисол: Smartfon таъмирлаш",
+            "🛠 **Хизмат турини киритинг:**\nМисол: Smartfon таъмирлаш",
             parse_mode='Markdown',
             reply_markup=Keyboards.cancel()
         )
@@ -865,8 +981,7 @@ class BotHandlers:
         
         context.user_data['order_data']['phone'] = text
         await update.message.reply_text(
-            "📝 **Қўшимча маълумотлар:**\n"
-            "(Ўтказиб юбориш мумкин)",
+            "📝 **Қўшимча маълумотлар:**\n(Ўтказиб юбориш мумкин)",
             parse_mode='Markdown',
             reply_markup=Keyboards.skip()
         )
@@ -891,9 +1006,7 @@ class BotHandlers:
         
         # Notify user
         await update.message.reply_text(
-            f"✅ Буюртмангиз қабул қилинди!\n"
-            f"🆔 Рақами: {order['order_number']}\n\n"
-            f"📝 Ҳолатни «Менинг буюртмаларим» орқали кузатинг.",
+            f"✅ Буюртмангиз қабул қилинди!\n🆔 Рақами: {order['order_number']}",
             reply_markup=Keyboards.main(context.user_data.get('role', 'user'))
         )
         
@@ -909,11 +1022,7 @@ class BotHandlers:
         # Notify masters group
         await update.message.bot.send_message(
             MASTERS_GROUP_ID,
-            f"🆕 **Янги буюртма!**\n"
-            f"🆔 {order['order_number']}\n"
-            f"🛠 {order['service']}\n"
-            f"📍 {order['address']}\n\n"
-            f"✅ Буюртмани олиш учун /take_{order['order_number']}",
+            f"🆕 **Янги буюртма!**\n🆔 {order['order_number']}\n🛠 {order['service']}\n📍 {order['address']}\n\n✅ /take_{order['order_number']}",
             parse_mode='Markdown',
             reply_markup=Keyboards.master_actions(order['order_number'])
         )
@@ -936,11 +1045,7 @@ class BotHandlers:
         orders = await OrderDB.get_user_orders(user_id)
         
         if not orders:
-            await update.message.reply_text(
-                "📭 Сизда буюртмалар йўқ.\n"
-                "📝 Янги буюртма бериш учун «Буюртма бериш» тугмасини босинг.",
-                reply_markup=Keyboards.main(context.user_data.get('role', 'user'))
-            )
+            await update.message.reply_text("📭 Сизда буюртмалар йўқ.")
             return
         
         text = "📋 **Сизнинг буюртмаларингиз:**\n\n"
@@ -965,10 +1070,7 @@ class BotHandlers:
         for master in masters[:10]:
             status = "🟢 Онлайн" if master['is_online'] else "🔴 Офлайн"
             busy = "🔴 Банд" if master['is_busy'] else "🟢 Бўш"
-            text += f"👤 {master['full_name']}\n"
-            text += f"⭐ Рейтинг: {master['rating']:.1f}\n"
-            text += f"📊 Буюртмалар: {master['total_orders']}\n"
-            text += f"📌 {status} | {busy}\n"
+            text += f"👤 {master['full_name']}\n⭐ Рейтинг: {master['rating']:.1f}\n📌 {status} | {busy}\n"
             text += "-" * 30 + "\n"
         
         await update.message.reply_text(text, parse_mode='Markdown')
@@ -984,7 +1086,6 @@ class BotHandlers:
 
 🆔 ID: `{user.id}`
 👤 Исм: {user.full_name}
-📛 Юзернейм: @{user.username or 'Йўқ'}
 🎭 Рол: {role}
 """
         
@@ -995,7 +1096,7 @@ class BotHandlers:
 👨‍🔧 **Уста маълумотлари**
 ⭐ Рейтинг: {master['rating']:.1f}
 📊 Буюртмалар: {master['total_orders']}
-🟢 Ҳолат: {'Онлайн' if master['is_online'] else 'Офлайн'}
+{'🟢 Онлайн' if master['is_online'] else '🔴 Офлайн'}
 {'🔴 Банд' if master['is_busy'] else '🟢 Бўш'}
 """
         
@@ -1075,11 +1176,11 @@ class BotHandlers:
         
         async with Database.pool.acquire() as conn:
             completed = await conn.fetchval(
-                'SELECT COUNT(*) FROM orders WHERE master_id = $1 AND status = $1',
+                'SELECT COUNT(*) FROM orders WHERE master_id = $1 AND status = $2',
                 user_id, 'completed'
             )
             active = await conn.fetchval(
-                'SELECT COUNT(*) FROM orders WHERE master_id = $1 AND status IN ($1, $2)',
+                'SELECT COUNT(*) FROM orders WHERE master_id = $1 AND status IN ($2, $3)',
                 user_id, 'accepted', 'in_progress'
             )
         
@@ -1088,10 +1189,10 @@ class BotHandlers:
 
 👤 Уста: {master['full_name']}
 ⭐ Рейтинг: {master['rating']:.1f}
-📊 Жами буюртмалар: {master['total_orders']}
+📊 Жами: {master['total_orders']}
 ✅ Якунланган: {completed}
-🔵 Фаол буюртмалар: {active}
-🟢 Ҳолат: {'Онлайн' if master['is_online'] else 'Офлайн'}
+🔵 Фаол: {active}
+🟢 {'Онлайн' if master['is_online'] else 'Офлайн'}
 {'🔴 Банд' if master['is_busy'] else '🟢 Бўш'}
 """
         await update.message.reply_text(text, parse_mode='Markdown')
@@ -1101,14 +1202,14 @@ class BotHandlers:
         new_status = await MasterDB.toggle_online(user_id)
         
         status = "🟢 Онлайн" if new_status else "🔴 Офлайн"
-        await update.message.reply_text(f"✅ Ҳолат ўзгартирилди: {status}")
+        await update.message.reply_text(f"✅ Ҳолат: {status}")
 
     async def toggle_busy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         new_status = await MasterDB.toggle_busy(user_id)
         
         status = "🔴 Банд" if new_status else "🟢 Бўш"
-        await update.message.reply_text(f"✅ Ҳолат ўзгартирилди: {status}")
+        await update.message.reply_text(f"✅ Ҳолат: {status}")
 
     # ==================== ADMIN PANEL ====================
     
@@ -1168,9 +1269,7 @@ class BotHandlers:
             return
         
         await update.message.reply_text(
-            "👨‍🔧 **Уста қўшиш**\n\n"
-            "Устанинг ID сини ва тўлиқ исмини киритинг:\n"
-            "Мисол: `123456789 Алишер Алиев`",
+            "👨‍🔧 **Уста қўшиш**\n\nID ва исм киритинг:\nМисол: `123456789 Алишер`",
             parse_mode='Markdown'
         )
         context.user_data['admin_action'] = 'add_master'
@@ -1182,9 +1281,7 @@ class BotHandlers:
             return
         
         await update.message.reply_text(
-            "👨‍🔧 **Уста ўчириш**\n\n"
-            "Устанинг ID сини киритинг:\n"
-            "Мисол: `123456789`",
+            "👨‍🔧 **Уста ўчириш**\n\nID ни киритинг:\nМисол: `123456789`",
             parse_mode='Markdown'
         )
         context.user_data['admin_action'] = 'remove_master'
@@ -1196,9 +1293,7 @@ class BotHandlers:
             return
         
         await update.message.reply_text(
-            "👤 **Диспетчер қўшиш**\n\n"
-            "Диспетчернинг ID сини ва тўлиқ исмини киритинг:\n"
-            "Мисол: `987654321 Дилафрўз Исмоилова`",
+            "👤 **Диспетчер қўшиш**\n\nID ва исм киритинг:\nМисол: `987654321 Дилафрўз`",
             parse_mode='Markdown'
         )
         context.user_data['admin_action'] = 'add_dispatcher'
@@ -1210,9 +1305,7 @@ class BotHandlers:
             return
         
         await update.message.reply_text(
-            "👤 **Диспетчер ўчириш**\n\n"
-            "Диспетчернинг ID сини киритинг:\n"
-            "Мисол: `987654321`",
+            "👤 **Диспетчер ўчириш**\n\nID ни киритинг:\nМисол: `987654321`",
             parse_mode='Markdown'
         )
         context.user_data['admin_action'] = 'remove_dispatcher'
@@ -1228,8 +1321,7 @@ class BotHandlers:
             return
         
         await update.message.reply_text(
-            "📢 **Хабар юбориш**\n\n"
-            "Юбормоқчи бўлган хабарингизни киритинг:",
+            "📢 **Хабар юбориш**\n\nХабарингизни киритинг:",
             parse_mode='Markdown'
         )
         context.user_data['broadcast'] = True
@@ -1238,8 +1330,7 @@ class BotHandlers:
     
     async def contact_dispatcher(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
-            "📞 **Диспетчер билан боғланиш**\n\n"
-            "Савол ёки мурожаатингизни ёзинг. Диспетчер сизга жавоб беради.",
+            "📞 **Диспетчер билан боғланиш**\n\nСавол ёзинг:",
             reply_markup=Keyboards.cancel()
         )
         context.user_data['contact_dispatcher'] = True
@@ -1259,12 +1350,11 @@ class BotHandlers:
             await OrderDB.update_status(order_number, 'accepted', query.from_user.id)
             await query.edit_message_text(f"✅ Буюртма {order_number} қабул қилинди!")
             
-            # Notify user
             order = await OrderDB.get_by_number(order_number)
             if order:
                 await query.message.bot.send_message(
                     order['user_id'],
-                    f"✅ Буюртмангиз {order_number} қабул қилинди!\n📌 Ҳолат: Қабул қилинган"
+                    f"✅ Буюртмангиз {order_number} қабул қилинди!"
                 )
         
         elif action == 'reject':
@@ -1275,27 +1365,25 @@ class BotHandlers:
             if order:
                 await query.message.bot.send_message(
                     order['user_id'],
-                    f"🚫 Буюртмангиз {order_number} рад этилди.\n📞 Диспетчер билан боғланинг."
+                    f"🚫 Буюртмангиз {order_number} рад этилди."
                 )
         
         elif action == 'take':
             master_id = query.from_user.id
-            
-            # Check if master exists and is available
             master = await MasterDB.get_by_id(master_id)
+            
             if not master:
                 await query.edit_message_text("❌ Сиз уста эмассиз!")
                 return
             
             if master['is_busy']:
-                await query.edit_message_text("❌ Сиз бандсиз! Аввал буюртмангизни тугатинг.")
+                await query.edit_message_text("❌ Сиз бандсиз!")
                 return
             
             if not master['is_online']:
-                await query.edit_message_text("❌ Сиз офлайнсиз! Аввал онлайн режимга ўтинг.")
+                await query.edit_message_text("❌ Сиз офлайнсиз!")
                 return
             
-            # Assign order
             await OrderDB.assign_master(order_number, master_id)
             await query.edit_message_text(f"✅ Буюртма {order_number} сизга бириктирилди!")
             
@@ -1303,7 +1391,7 @@ class BotHandlers:
             if order:
                 await query.message.bot.send_message(
                     order['user_id'],
-                    f"👨‍🔧 Буюртмангиз {order_number} устага бириктирилди!\n📌 Ҳолат: Иш жараёнида"
+                    f"👨‍🔧 Буюртмангиз {order_number} устага бириктирилди!"
                 )
         
         elif action == 'complete':
@@ -1311,16 +1399,12 @@ class BotHandlers:
             await query.edit_message_text(f"✅ Буюртма {order_number} якунланди!")
             
             order = await OrderDB.get_by_number(order_number)
-            if order:
-                # Free master
-                if order['master_id']:
-                    await MasterDB.toggle_busy(order['master_id'])
+            if order and order['master_id']:
+                await MasterDB.toggle_busy(order['master_id'])
                 
-                # Ask for rating
                 await query.message.bot.send_message(
                     order['user_id'],
-                    f"✅ Буюртмангиз {order_number} якунланди!\n\n"
-                    f"⭐ Устани баҳолаш учун тугмани босинг:",
+                    f"✅ Буюртмангиз {order_number} якунланди!\n\n⭐ Баҳолаш:",
                     reply_markup=Keyboards.rate_actions(order_number)
                 )
         
@@ -1333,122 +1417,128 @@ class BotHandlers:
             order = await OrderDB.get_by_number(order_number)
             if order:
                 await query.edit_message_text(
-                    f"📞 Мижоз билан боғланиш\n"
-                    f"Телефон: {order['phone']}\n"
-                    f"Манзил: {order['address']}"
+                    f"📞 Мижоз телефони: {order['phone']}\n📍 Манзил: {order['address']}"
                 )
-
-    # ==================== BROADCAST MESSAGES ====================
-    
-    async def broadcast_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        text = update.message.text
-        
-        if context.user_data.get('broadcast'):
-            # Send to all users
-            async with Database.pool.acquire() as conn:
-                users = await conn.fetch('SELECT user_id FROM users')
-            
-            sent = 0
-            for user in users:
-                try:
-                    await update.message.bot.send_message(user['user_id'], text)
-                    sent += 1
-                    await asyncio.sleep(0.05)
-                except Exception as e:
-                    logger.error(f"Failed to send to {user['user_id']}: {e}")
-            
-            await update.message.reply_text(
-                f"✅ Хабар юборилди!\n"
-                f"📊 Жами: {sent} та фойдаланувчига"
-            )
-            context.user_data['broadcast'] = False
-            return
-        
-        if context.user_data.get('contact_dispatcher'):
-            # Send to dispatcher
-            msg = f"📞 **Мижоздан хабар**\n\n{text}"
-            
-            if DISPATCHER_ID:
-                await update.message.bot.send_message(DISPATCHER_ID, msg, parse_mode='Markdown')
-                await update.message.reply_text(
-                    "✅ Хабарингиз диспетчерга юборилди!",
-                    reply_markup=Keyboards.main(context.user_data.get('role', 'user'))
-                )
-            else:
-                await update.message.reply_text(
-                    "❌ Диспетчер мавжуд эмас. Админга хабар берилди."
-                )
-                await update.message.bot.send_message(ADMIN_ID, msg, parse_mode='Markdown')
-            
-            context.user_data['contact_dispatcher'] = False
-            return
-        
-        if context.user_data.get('admin_action'):
-            action = context.user_data['admin_action']
-            parts = text.strip().split()
-            
-            if len(parts) < 2 and action not in ['remove_master', 'remove_dispatcher']:
-                await update.message.reply_text("❌ ID ва исм киритинг! Мисол: `123456789 Алишер`", parse_mode='Markdown')
-                return
-            
-            try:
-                target_id = int(parts[0])
-            except ValueError:
-                await update.message.reply_text("❌ ID сон бўлиши керак!")
-                return
-            
-            if action == 'add_master':
-                full_name = ' '.join(parts[1:])
-                await MasterDB.add(target_id, full_name)
-                await update.message.reply_text(f"✅ Уста қўшилди: {full_name}")
-            
-            elif action == 'remove_master':
-                await MasterDB.remove(target_id)
-                await update.message.reply_text(f"✅ Уста ўчирилди: {target_id}")
-            
-            elif action == 'add_dispatcher':
-                full_name = ' '.join(parts[1:])
-                await DispatcherDB.add(target_id, full_name)
-                await update.message.reply_text(f"✅ Диспетчер қўшилди: {full_name}")
-            
-            elif action == 'remove_dispatcher':
-                await DispatcherDB.remove(target_id)
-                await update.message.reply_text(f"✅ Диспетчер ўчирилди: {target_id}")
-            
-            context.user_data['admin_action'] = None
-            return
 
     # ==================== UNKNOWN ====================
     
     async def unknown(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check for admin actions
         if context.user_data.get('admin_action'):
-            await self.broadcast_message(update, context)
+            await self.handle_admin_input(update, context)
             return
         
         if context.user_data.get('broadcast'):
-            await self.broadcast_message(update, context)
+            await self.handle_broadcast_input(update, context)
             return
         
         if context.user_data.get('contact_dispatcher'):
-            await self.broadcast_message(update, context)
+            await self.handle_contact_input(update, context)
             return
         
         await update.message.reply_text(
-            "❌ Тушунарсиз команда.\n"
-            "📋 Менюдан танланг ёки /start босинг."
+            "❌ Тушунарсиз команда.\n/start босинг."
         )
+
+    async def handle_admin_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        action = context.user_data['admin_action']
+        text = update.message.text.strip()
+        parts = text.split()
+        
+        try:
+            target_id = int(parts[0])
+        except ValueError:
+            await update.message.reply_text("❌ ID сон бўлиши керак!")
+            return
+        
+        if action == 'add_master':
+            full_name = ' '.join(parts[1:])
+            if not full_name:
+                await update.message.reply_text("❌ Исм киритинг!")
+                return
+            await MasterDB.add(target_id, full_name)
+            await update.message.reply_text(f"✅ Уста қўшилди: {full_name}")
+        
+        elif action == 'remove_master':
+            await MasterDB.remove(target_id)
+            await update.message.reply_text(f"✅ Уста ўчирилди: {target_id}")
+        
+        elif action == 'add_dispatcher':
+            full_name = ' '.join(parts[1:])
+            if not full_name:
+                await update.message.reply_text("❌ Исм киритинг!")
+                return
+            await DispatcherDB.add(target_id, full_name)
+            await update.message.reply_text(f"✅ Диспетчер қўшилди: {full_name}")
+        
+        elif action == 'remove_dispatcher':
+            await DispatcherDB.remove(target_id)
+            await update.message.reply_text(f"✅ Диспетчер ўчирилди: {target_id}")
+        
+        context.user_data['admin_action'] = None
+
+    async def handle_broadcast_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        text = update.message.text
+        
+        async with Database.pool.acquire() as conn:
+            users = await conn.fetch('SELECT user_id FROM users')
+        
+        sent = 0
+        for user in users:
+            try:
+                await update.message.bot.send_message(user['user_id'], text)
+                sent += 1
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                logger.error(f"Failed: {e}")
+        
+        await update.message.reply_text(
+            f"✅ Хабар юборилди!\n📊 {sent} та фойдаланувчига"
+        )
+        context.user_data['broadcast'] = False
+
+    async def handle_contact_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        text = update.message.text
+        msg = f"📞 **Мижоздан хабар**\n\n{text}"
+        
+        target = DISPATCHER_ID or ADMIN_ID
+        await update.message.bot.send_message(target, msg, parse_mode='Markdown')
+        await update.message.reply_text(
+            "✅ Хабарингиз юборилди!",
+            reply_markup=Keyboards.main(context.user_data.get('role', 'user'))
+        )
+        context.user_data['contact_dispatcher'] = False
+
+    # ==================== MASTERS STATS ====================
+    
+    async def masters_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        role = context.user_data.get('role', 'user')
+        if role not in ['dispatcher', 'admin']:
+            await update.message.reply_text("❌ Сизда ҳуқуқ йўқ!")
+            return
+        
+        masters = await MasterDB.get_all()
+        
+        if not masters:
+            await update.message.reply_text("👨‍🔧 Усталар мавжуд эмас.")
+            return
+        
+        text = "👨‍🔧 **Усталар статистикаси**\n\n"
+        for master in masters:
+            text += f"👤 {master['full_name']}\n"
+            text += f"⭐ Рейтинг: {master['rating']:.1f}\n"
+            text += f"📊 Буюртмалар: {master['total_orders']}\n"
+            text += f"🟢 {'Онлайн' if master['is_online'] else 'Офлайн'}\n"
+            text += "-" * 30 + "\n"
+        
+        await update.message.reply_text(text, parse_mode='Markdown')
 
     # ==================== ERROR HANDLER ====================
     
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Хатолик: {context.error}")
-        
         try:
-            await update.message.reply_text(
-                "❌ Техник хатолик юз берди.\n"
-                "Администраторга хабар берилди."
-            )
+            await update.message.reply_text("❌ Техник хатолик!")
         except:
             pass
 
@@ -1458,11 +1548,14 @@ class BotHandlers:
 # ============================================================
 
 async def main():
+    global _application
+    
     # Initialize database
     await Database.init()
     
     # Create bot application
     application = Application.builder().token(TOKEN).build()
+    _application = application
     
     # Setup handlers
     BotHandlers(application)
@@ -1470,15 +1563,27 @@ async def main():
     # Start bot
     await application.initialize()
     await application.start()
-    await application.updater.start_polling()
     
-    logger.info("🚀 BOT ISHGA TUSHDI!")
+    # Webhook or Polling
+    if WEBHOOK_URL:
+        # Webhook mode
+        webhook_url = f"{WEBHOOK_URL}/{TOKEN}"
+        await application.bot.set_webhook(webhook_url)
+        logger.info(f"✅ Webhook set: {webhook_url}")
+        logger.info(f"📊 Webhook info: {await application.bot.get_webhook_info()}")
+        
+        # Start Flask (for webhook)
+        def run_flask():
+            flask_app.run(host="0.0.0.0", port=PORT, debug=False)
+        
+        Thread(target=run_flask, daemon=True).start()
+        logger.info(f"🚀 Flask server started on port {PORT}")
+    else:
+        # Polling mode
+        await application.updater.start_polling()
+        logger.info("🚀 Bot started in polling mode")
     
-    # Start Flask in background
-    def run_flask():
-        flask_app.run(host="0.0.0.0", port=PORT, debug=False)
-    
-    Thread(target=run_flask, daemon=True).start()
+    logger.info("✅ BOT ISHGA TUSHDI!")
     
     # Keep running
     try:
