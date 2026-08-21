@@ -33,7 +33,6 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputFile,
-    ChatType,
 )
 
 from telegram.ext import (
