@@ -1,5 +1,5 @@
 # ============================================================
-# USTA 24 ANDIJON - FULL MAIN.PY (TUZATILGAN)
+# USTA 24 ANDIJON - FULL MAIN.PY (TO'LIQ TUZATILGAN)
 # ============================================================
 
 import os
@@ -13,12 +13,12 @@ import asyncpg
 
 from telegram import (
     Update,
-    ChatType,
     ReplyKeyboardMarkup,
     KeyboardButton,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputFile,
+    ChatType,  # ✅ TO'G'RI IMPORT
 )
 
 from telegram.ext import (
@@ -162,7 +162,7 @@ async def is_master(user_id: int) -> bool:
     return row is not None
 
 # ============================================================
-# DATABASE INIT - TUZATILGAN
+# DATABASE INIT
 # ============================================================
 
 async def init_db():
