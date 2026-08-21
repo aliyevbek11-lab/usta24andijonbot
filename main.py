@@ -1213,7 +1213,6 @@ async def order_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Iltimos, qaytadan urinib ko'ring."
                 )
         return
-    
     if data == "edit_order":
         user = query.from_user
         if user and user.id in user_orders:
