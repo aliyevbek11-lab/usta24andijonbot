@@ -32,6 +32,18 @@ from telegram.ext import (
 
 
 # ============================================================
+# LOGGING - BIRINCHI BO'LIB KELISHI KERAK
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
+
+logger = logging.getLogger("USTA24")
+
+
+# ============================================================
 # CONFIG
 # ============================================================
 
@@ -40,9 +52,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = os.getenv("ADMIN_ID")
 MASTERS_GROUP_ID = os.getenv("MASTERS_GROUP_ID")
 DISPATCHER_ID = os.getenv("DISPATCHER_ID")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Optional - agar bo'lmasa polling ishlaydi
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Optional
 PORT = int(os.getenv("PORT", 8080))
 
+# Check required variables
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN topilmadi")
 
@@ -55,6 +68,7 @@ if not ADMIN_ID:
 if not MASTERS_GROUP_ID:
     raise RuntimeError("MASTERS_GROUP_ID topilmadi")
 
+# Convert to int
 ADMIN_ID = int(ADMIN_ID)
 MASTERS_GROUP_ID = int(MASTERS_GROUP_ID)
 
@@ -68,18 +82,6 @@ if WEBHOOK_URL:
     logger.info(f"✅ Webhook URL: {WEBHOOK_URL}")
 else:
     logger.info("ℹ️ WEBHOOK_URL topilmadi, polling rejimida ishlaydi")
-
-
-# ============================================================
-# LOGGING
-# ============================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-)
-
-logger = logging.getLogger("USTA24")
 
 
 # ============================================================
@@ -195,7 +197,7 @@ async def webhook_info():
 
 
 # ============================================================
-# DATABASE (qisqa versiya)
+# DATABASE
 # ============================================================
 
 class Database:
@@ -302,7 +304,7 @@ class Database:
 
 
 # ============================================================
-# DATABASE HELPERS (qisqa)
+# CONSTANTS
 # ============================================================
 
 ORDER_STATUSES = {
@@ -313,6 +315,11 @@ ORDER_STATUSES = {
     'cancelled': {'emoji': '❌', 'name': 'Бекор қилинган'},
     'rejected': {'emoji': '🚫', 'name': 'Рад этилган'}
 }
+
+
+# ============================================================
+# DATABASE HELPERS
+# ============================================================
 
 class UserDB:
     @staticmethod
@@ -385,6 +392,19 @@ class OrderDB:
                 ORDER BY o.created_at DESC 
                 LIMIT $2
             ''', user_id, limit)
+            return [dict(order) for order in orders]
+
+    @staticmethod
+    async def get_master_orders(master_id: int, limit: int = 10) -> List[dict]:
+        async with Database.pool.acquire() as conn:
+            orders = await conn.fetch('''
+                SELECT o.*, u.full_name as user_name, u.phone as user_phone
+                FROM orders o
+                LEFT JOIN users u ON o.user_id = u.user_id
+                WHERE o.master_id = $1 
+                ORDER BY o.created_at DESC 
+                LIMIT $2
+            ''', master_id, limit)
             return [dict(order) for order in orders]
 
     @staticmethod
@@ -482,6 +502,19 @@ class MasterDB:
                 SELECT m.*, COUNT(o.id) as active_orders
                 FROM masters m
                 LEFT JOIN orders o ON m.user_id = o.master_id AND o.status IN ('accepted', 'in_progress')
+                GROUP BY m.user_id
+                ORDER BY m.rating DESC
+            ''')
+            return [dict(master) for master in masters]
+
+    @staticmethod
+    async def get_available() -> List[dict]:
+        async with Database.pool.acquire() as conn:
+            masters = await conn.fetch('''
+                SELECT m.*, COUNT(o.id) as active_orders
+                FROM masters m
+                LEFT JOIN orders o ON m.user_id = o.master_id AND o.status IN ('accepted', 'in_progress')
+                WHERE m.is_online = TRUE AND m.is_busy = FALSE
                 GROUP BY m.user_id
                 ORDER BY m.rating DESC
             ''')
@@ -678,7 +711,7 @@ class MessageHelper:
 
 
 # ============================================================
-# BOT HANDLERS (to'liq)
+# BOT HANDLERS
 # ============================================================
 
 class BotHandlers:
@@ -832,7 +865,7 @@ class BotHandlers:
             reply_markup=Keyboards.main(context.user_data.get('role', 'user'))
         )
         
-        # Notify dispatcher and masters
+        # Notify dispatcher
         order_info = MessageHelper.order_info(order)
         await update.message.bot.send_message(
             DISPATCHER_ID or ADMIN_ID,
@@ -841,6 +874,7 @@ class BotHandlers:
             reply_markup=Keyboards.order_actions(order['order_number'])
         )
         
+        # Notify masters group
         await update.message.bot.send_message(
             MASTERS_GROUP_ID,
             f"🆕 **Янги буюртма!**\n🆔 {order['order_number']}\n🛠 {order['service']}\n📍 {order['address']}",
@@ -1207,22 +1241,22 @@ async def main():
     if WEBHOOK_URL:
         webhook_url = f"{WEBHOOK_URL}/{TOKEN}"
         await application.bot.set_webhook(webhook_url)
-        logger.info(f"✅ Webhook: {webhook_url}")
+        logger.info(f"✅ Webhook set: {webhook_url}")
         
         def run_flask():
             flask_app.run(host="0.0.0.0", port=PORT, debug=False)
         Thread(target=run_flask, daemon=True).start()
-        logger.info(f"🚀 Flask: {PORT}")
+        logger.info(f"🚀 Flask server started on port {PORT}")
     else:
         await application.updater.start_polling()
-        logger.info("🚀 Polling rejimida ishga tushdi")
+        logger.info("🚀 Bot started in polling mode")
     
     logger.info("✅ BOT ISHGA TUSHDI!")
     
     try:
         await asyncio.Event().wait()
     except KeyboardInterrupt:
-        logger.info("🛑 To'xtatilmoqda...")
+        logger.info("🛑 Bot to'xtatilmoqda...")
     finally:
         await Database.close()
         await application.shutdown()
