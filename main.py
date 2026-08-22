@@ -177,6 +177,7 @@ async def init_db():
                 duration INTEGER NOT NULL DEFAULT 0,
                 emergency BOOLEAN NOT NULL DEFAULT FALSE,
                 emergency_percent INTEGER NOT NULL DEFAULT 0,
+                result_photo TEXT NOT NULL DEFAULT '',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 accepted_at TIMESTAMPTZ,
                 started_at TIMESTAMPTZ,
@@ -363,7 +364,6 @@ async def create_order(
     longitude=None,
 ):
     async with db_pool.acquire() as conn:
-        # Generate order number
         count = await conn.fetchval("SELECT COUNT(*) FROM u24_orders")
         order_num = f"#{1000 + count + 1}"
 
@@ -482,25 +482,6 @@ async def assign_master(order_id, master_id, master_name, master_phone):
             master_id,
             master_name,
             master_phone,
-            order_id,
-        )
-
-
-async def complete_order(order_id, price, duration, result_photo):
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE u24_orders
-            SET price = $1,
-                duration = $2,
-                result_photo = $3,
-                status = 'completed',
-                completed_at = NOW()
-            WHERE id = $4
-            """,
-            price,
-            duration,
-            result_photo,
             order_id,
         )
 
@@ -748,7 +729,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         await ensure_user(user)
 
-        # Check if admin
         if ADMIN_ID and user.id == ADMIN_ID:
             await set_role(user.id, "admin")
             await update.message.reply_text(
@@ -866,7 +846,6 @@ async def handle_order_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user = update.effective_user
 
-    # Check if master registration
     if await master_register_handler(update, context):
         return
 
@@ -987,7 +966,6 @@ async def handle_order_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["order_time"] = text
         context.user_data["order_step"] = "confirm"
 
-        # Show confirmation
         service = context.user_data.get("service", "")
         sub_service = context.user_data.get("sub_service", "")
         description = context.user_data.get("description", "")
@@ -1127,7 +1105,6 @@ async def handle_order_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Order photo
     if context.user_data.get("order_step") == "photo":
         photo = update.message.photo[-1]
         context.user_data["problem_photo"] = photo.file_id
@@ -1138,7 +1115,6 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Complete work photo
     if context.user_data.get("complete_order"):
         photo = update.message.photo[-1]
         order_id = context.user_data["complete_order"]
@@ -1166,10 +1142,6 @@ async def order_confirm_callback(update: Update, context: ContextTypes.DEFAULT_T
     try:
         db_user = await get_user(user.id)
 
-        # Check if emergency
-        is_emergency = context.user_data.get("emergency", False)
-        emergency_percent = context.user_data.get("emergency_percent", 0)
-
         order_id, order_num = await create_order(
             customer_id=user.id,
             customer_name=user.full_name or "Mijoz",
@@ -1179,8 +1151,6 @@ async def order_confirm_callback(update: Update, context: ContextTypes.DEFAULT_T
             description=context.user_data.get("description", ""),
             address=context.user_data.get("address", ""),
             order_time=context.user_data.get("order_time", ""),
-            emergency=is_emergency,
-            emergency_percent=emergency_percent,
         )
 
         photo_id = context.user_data.get("problem_photo")
@@ -1196,14 +1166,12 @@ async def order_confirm_callback(update: Update, context: ContextTypes.DEFAULT_T
             "👨‍🔧 Ustalar qidirilmoqda..."
         )
 
-        # Send to group
         if MASTERS_GROUP_ID:
             try:
                 await send_order_to_group(context.bot, order_id)
             except Exception as e:
                 logger.error(f"Group send error: {e}")
 
-        # Notify admin
         if ADMIN_ID:
             try:
                 await context.bot.send_message(
@@ -1252,9 +1220,6 @@ async def send_order_to_group(bot, order_id):
         f"📍 Manzil: {order['address']}\n"
         f"🕐 Vaqt: {order['order_time']}\n"
     )
-
-    if order['emergency']:
-        text += f"\n🚨 24/7 SHOSHILINCH! +{order['emergency_percent']}%"
 
     keyboard = InlineKeyboardMarkup(
         [
@@ -1307,9 +1272,6 @@ async def master_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Buyurtma topilmadi.", show_alert=True)
             return
 
-        # ----------------------------------------------------
-        # ACCEPT
-        # ----------------------------------------------------
         if action == "accept":
             if order["status"] != "new":
                 await query.answer("Bu buyurtmani boshqa usta olgan.", show_alert=True)
@@ -1339,9 +1301,6 @@ async def master_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             return
 
-        # ----------------------------------------------------
-        # REJECT
-        # ----------------------------------------------------
         if action == "reject":
             await update_order_status(order_id, "rejected")
 
@@ -1359,9 +1318,6 @@ async def master_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             return
 
-        # ----------------------------------------------------
-        # START WORK
-        # ----------------------------------------------------
         if action == "startwork":
             if order["master_id"] != user.id:
                 await query.answer("Bu buyurtma sizga tegishli emas.", show_alert=True)
@@ -1383,9 +1339,6 @@ async def master_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             return
 
-        # ----------------------------------------------------
-        # COMPLETE
-        # ----------------------------------------------------
         if action == "complete":
             if order["master_id"] != user.id:
                 await query.answer("Bu buyurtma sizga tegishli emas.", show_alert=True)
@@ -1399,9 +1352,6 @@ async def master_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["complete_order"] = order_id
             return
 
-        # ----------------------------------------------------
-        # VIEW PHOTOS
-        # ----------------------------------------------------
         if action == "viewphotos":
             async with db_pool.acquire() as conn:
                 photos = await conn.fetch(
@@ -1453,16 +1403,10 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user = update.effective_user
 
-    # --------------------------------------------------------
-    # BUYURTMA BERISH
-    # --------------------------------------------------------
     if text == "🛒 Buyurtma berish":
         await order_start(update, context)
         return
 
-    # --------------------------------------------------------
-    # MENING BUYURTMALARIM
-    # --------------------------------------------------------
     if text == "📋 Mening buyurtmalarim":
         orders = await get_user_orders(user.id)
 
@@ -1483,9 +1427,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(out)
         return
 
-    # --------------------------------------------------------
-    # BUYURTMA HOLATI
-    # --------------------------------------------------------
     if text == "🔍 Buyurtma holati":
         await update.message.reply_text(
             "🔍 Buyurtma raqamini yozing.\n\nMasalan: 1245"
@@ -1493,9 +1434,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["checking_order"] = True
         return
 
-    # --------------------------------------------------------
-    # BEKOR QILISH
-    # --------------------------------------------------------
     if text == "❌ Bekor qilish":
         await update.message.reply_text(
             "❌ Bekor qilmoqchi bo'lgan buyurtma raqamini yozing.\n\nMasalan: 1245"
@@ -1503,17 +1441,11 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["cancel_order"] = True
         return
 
-    # --------------------------------------------------------
-    # QAYTA BUYURTMA
-    # --------------------------------------------------------
     if text == "🔁 Qayta buyurtma":
         await update.message.reply_text("🔁 Yangi buyurtma berishni boshlaymiz.")
         await order_start(update, context)
         return
 
-    # --------------------------------------------------------
-    # MENING USTALARIM
-    # --------------------------------------------------------
     if text == "👨‍🔧 Mening ustalarim":
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
@@ -1537,9 +1469,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(out)
         return
 
-    # --------------------------------------------------------
-    # REYTINGIM
-    # --------------------------------------------------------
     if text == "⭐ Reytingim":
         rating = await get_master_rating(user.id)
         bonuses = await get_user_bonus(user.id)
@@ -1554,9 +1483,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # SHARH QOLDIRISH
-    # --------------------------------------------------------
     if text == "📝 Sharh qoldirish":
         orders = await get_user_orders(user.id, "completed")
 
@@ -1578,16 +1504,10 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["review_step"] = "select_master"
         return
 
-    # --------------------------------------------------------
-    # ESLATMALARIM
-    # --------------------------------------------------------
     if text == "📌 Eslatmalarim":
         await update.message.reply_text("📌 Hozircha eslatmalar mavjud emas.")
         return
 
-    # --------------------------------------------------------
-    # YAQIN ATROFDAGI USTALAR
-    # --------------------------------------------------------
     if text == "🗺 Yaqin atrofdagi ustalar":
         await update.message.reply_text(
             "🗺 Yaqin atrofdagi ustalarni aniqlash uchun geolokatsiya funksiyasi ishlatiladi.\n\n"
@@ -1600,18 +1520,12 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # YOZILMA
-    # --------------------------------------------------------
     if text == "📅 Yozilma":
         await update.message.reply_text(
             "📅 Bron qilish: buyurtma berishda kerakli vaqtni ko'rsating."
         )
         return
 
-    # --------------------------------------------------------
-    # LOYALLIK VA BONUSLAR
-    # --------------------------------------------------------
     if text == "🎁 Loyallik va bonuslar":
         bonuses = await get_user_bonus(user.id)
 
@@ -1641,9 +1555,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # AI YORDAMCHI
-    # --------------------------------------------------------
     if text == "🤖 AI yordamchi":
         await update.message.reply_text(
             "🤖 AI YORDAMCHI\n\n"
@@ -1656,9 +1567,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # SOZLAMALAR
-    # --------------------------------------------------------
     if text == "⚙️ Sozlamalar":
         db_user = await get_user(user.id)
         await update.message.reply_text(
@@ -1672,9 +1580,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # MENING STATISTIKAM
-    # --------------------------------------------------------
     if text == "📊 Mening statistikam":
         orders = await get_user_orders(user.id)
         total = len(orders)
@@ -1692,9 +1597,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # CHEGIRMALAR
-    # --------------------------------------------------------
     if text == "🏷 Chegirmalar":
         await update.message.reply_text(
             "🏷 CHEGIRMALAR VA AKSIYALAR\n\n"
@@ -1703,9 +1605,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # TEZ YORDAM
-    # --------------------------------------------------------
     if text == "📞 Tez yordam":
         await update.message.reply_text(
             f"📞 TEZ YORDAM\n\n"
@@ -1723,9 +1622,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # BILDIRISHNOMALAR
-    # --------------------------------------------------------
     if text == "🔔 Bildirishnomalar":
         await update.message.reply_text(
             "🔔 BILDIRISHNOMALAR\n\n"
@@ -1737,9 +1633,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # MENING HUJJATLARIM
-    # --------------------------------------------------------
     if text == "📁 Mening hujjatlarim":
         await update.message.reply_text(
             "📁 MENING HUJJATLARIM\n\n"
@@ -1750,9 +1643,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # DO'STGA TAVSIYA
-    # --------------------------------------------------------
     if text == "🕊 Do'stga tavsiya":
         await update.message.reply_text(
             "🕊 DO'STGA TAVSIYA QILISH\n\n"
@@ -1763,9 +1653,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # DISPETCHER
-    # --------------------------------------------------------
     if text == "📞 Dispetcher":
         await update.message.reply_text(
             f"📞 DISPETCHER\n\n"
@@ -1780,9 +1667,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # 24/7 SHOSHILINCH
-    # --------------------------------------------------------
     if text == "🚨 24/7 Shoshilinch":
         await update.message.reply_text(
             "🚨 24/7 SHOSHILINCH REJIM\n\n"
@@ -1802,9 +1686,6 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # UNKNOWN
-    # --------------------------------------------------------
     await update.message.reply_text(
         "❓ Tushunarsiz buyruq.\n"
         "Iltimos, menyudan tanlang:",
@@ -1820,9 +1701,6 @@ async def master_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user = update.effective_user
 
-    # --------------------------------------------------------
-    # YANGI BUYURTMALAR
-    # --------------------------------------------------------
     if text == "📋 Yangi buyurtmalar":
         if not MASTERS_GROUP_ID:
             await update.message.reply_text("⚠️ MASTERS_GROUP_ID sozlanmagan.")
@@ -1855,9 +1733,6 @@ async def master_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(out)
         return
 
-    # --------------------------------------------------------
-    # MENING FAOL
-    # --------------------------------------------------------
     if text == "✅ Mening faol":
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
@@ -1885,9 +1760,6 @@ async def master_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(out)
         return
 
-    # --------------------------------------------------------
-    # TARIX
-    # --------------------------------------------------------
     if text == "⏳ Tarix":
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
@@ -1916,9 +1788,6 @@ async def master_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(out)
         return
 
-    # --------------------------------------------------------
-    # ISH HAQI
-    # --------------------------------------------------------
     if text == "💰 Ish haqi":
         async with db_pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -1939,9 +1808,6 @@ async def master_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # REYTINGIM
-    # --------------------------------------------------------
     if text == "⭐ Reytingim":
         rating = await get_master_rating(user.id)
 
@@ -1953,9 +1819,6 @@ async def master_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # ISH STATISTIKASI
-    # --------------------------------------------------------
     if text == "📊 Ish statistikasi":
         async with db_pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -1979,9 +1842,6 @@ async def master_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # DISPETCHER
-    # --------------------------------------------------------
     if text == "📞 Dispetcher":
         await update.message.reply_text(
             f"📞 DISPETCHER\n\n"
@@ -1990,9 +1850,6 @@ async def master_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # 24/7 SHOSHILINCH
-    # --------------------------------------------------------
     if text == "🚨 24/7 Shoshilinch":
         await update.message.reply_text(
             f"🚨 24/7 SHOSHILINCH\n\n"
@@ -2004,9 +1861,6 @@ async def master_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # OTHER MASTER MENU ITEMS
-    # --------------------------------------------------------
     if text == "📅 Kunlik jadval":
         await update.message.reply_text(
             "📅 KUNLIK JADVAL\n\n"
@@ -2187,9 +2041,6 @@ async def master_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(out)
         return
 
-    # --------------------------------------------------------
-    # UNKNOWN
-    # --------------------------------------------------------
     await update.message.reply_text(
         "👨‍🔧 Usta menyusi:",
         reply_markup=master_menu(),
@@ -2203,9 +2054,6 @@ async def master_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
-    # --------------------------------------------------------
-    # FOYDALANUVCHILAR
-    # --------------------------------------------------------
     if text == "👥 Foydalanuvchilar":
         async with db_pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -2228,9 +2076,6 @@ async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # BUYURTMALAR
-    # --------------------------------------------------------
     if text == "🛠 Buyurtmalar":
         stats = await get_order_stats()
 
@@ -2246,9 +2091,6 @@ async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # USTALAR
-    # --------------------------------------------------------
     if text == "👨‍🔧 Ustalar":
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
@@ -2271,9 +2113,6 @@ async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(out)
         return
 
-    # --------------------------------------------------------
-    # REYTINGLAR
-    # --------------------------------------------------------
     if text == "⭐ Reytinglar":
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
@@ -2300,9 +2139,6 @@ async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(out)
         return
 
-    # --------------------------------------------------------
-    # BONUSLAR
-    # --------------------------------------------------------
     if text == "🎁 Bonuslar":
         async with db_pool.acquire() as conn:
             total = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM u24_bonuses")
@@ -2315,9 +2151,6 @@ async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # TO'LOVLAR
-    # --------------------------------------------------------
     if text == "💰 To'lovlar":
         async with db_pool.acquire() as conn:
             total = await conn.fetchval(
@@ -2335,9 +2168,6 @@ async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # STATISTIKA
-    # --------------------------------------------------------
     if text == "📊 Statistika":
         async with db_pool.acquire() as conn:
             users = await conn.fetchval("SELECT COUNT(*) FROM u24_users")
@@ -2359,9 +2189,6 @@ async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # DISPETCHER
-    # --------------------------------------------------------
     if text == "📞 Dispetcher":
         await update.message.reply_text(
             f"📞 DISPETCHER\n\n"
@@ -2376,9 +2203,6 @@ async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # 24/7 REJIM
-    # --------------------------------------------------------
     if text == "🚨 24/7 Rejim":
         await update.message.reply_text(
             "🚨 24/7 SHOSHILINCH REJIM\n\n"
@@ -2393,9 +2217,6 @@ async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # OTHER ADMIN MENU ITEMS
-    # --------------------------------------------------------
     if text == "🏷 Chegirmalar":
         await update.message.reply_text(
             "🏷 CHEGIRMALAR\n\n"
@@ -2472,9 +2293,6 @@ async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --------------------------------------------------------
-    # UNKNOWN
-    # --------------------------------------------------------
     await update.message.reply_text(
         "👑 Admin panel:",
         reply_markup=admin_menu(),
@@ -2599,4 +2417,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()menu
+    main()
