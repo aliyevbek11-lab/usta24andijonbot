@@ -159,7 +159,7 @@ async def db_init():
         """)
         await c.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS users_telegram_id_uq
-            ON users(telegram_id) WHERE telegram_id IS NOT NULL
+            ON users(telegram_id)
         """)
 
         await _ensure_columns(c, "masters", {
@@ -195,11 +195,11 @@ async def db_init():
         """)
         await c.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS masters_user_id_uq
-            ON masters(user_id) WHERE user_id IS NOT NULL
+            ON masters(user_id)
         """)
         await c.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS dispatchers_user_id_uq
-            ON dispatchers(user_id) WHERE user_id IS NOT NULL
+            ON dispatchers(user_id)
         """)
 
         await _ensure_columns(c, "orders", {
@@ -266,7 +266,7 @@ async def db_init():
         """)
         await c.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS ratings_order_id_uq
-            ON ratings(order_id) WHERE order_id IS NOT NULL
+            ON ratings(order_id)
         """)
 
         required = {
@@ -345,7 +345,23 @@ async def db_init():
 
 async def user_upsert(tid,name='',phone='',username='',role=CLIENT):
  async with pool.acquire() as c:
-  await c.execute('''INSERT INTO users(telegram_id,name,phone,username,role) VALUES($1,$2,$3,$4,$5) ON CONFLICT(telegram_id) DO UPDATE SET name=CASE WHEN EXCLUDED.name<>'' THEN EXCLUDED.name ELSE users.name END,phone=CASE WHEN EXCLUDED.phone<>'' THEN EXCLUDED.phone ELSE users.phone END,username=CASE WHEN EXCLUDED.username<>'' THEN EXCLUDED.username ELSE users.username END,role=CASE WHEN users.role='admin' THEN 'admin' WHEN EXCLUDED.role<>'client' THEN EXCLUDED.role ELSE users.role END''',tid,name,phone,username,role)
+  await c.execute(
+   """
+   INSERT INTO users (telegram_id, name, phone, username, role)
+   VALUES ($1, $2, $3, $4, $5)
+   ON CONFLICT (telegram_id) DO UPDATE SET
+       name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE users.name END,
+       phone = CASE WHEN EXCLUDED.phone <> '' THEN EXCLUDED.phone ELSE users.phone END,
+       username = CASE WHEN EXCLUDED.username <> '' THEN EXCLUDED.username ELSE users.username END,
+       role = CASE
+           WHEN users.role = 'admin' THEN 'admin'
+           WHEN EXCLUDED.role <> 'client' THEN EXCLUDED.role
+           ELSE users.role
+       END,
+       is_active = TRUE
+   """,
+   tid, name, phone, username, role
+  )
 async def user(tid):
  async with pool.acquire() as c:return await c.fetchrow('SELECT * FROM users WHERE telegram_id=$1',tid)
 async def role(tid):
