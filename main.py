@@ -305,7 +305,7 @@ async def create_order(
                 order_num, customer_id, customer_name, customer_phone,
                 service, sub_service, description, address, order_time,
                 latitude, longitude
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
             RETURNING id
             """,
             order_num,
