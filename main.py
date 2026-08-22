@@ -115,6 +115,33 @@ def run_flask():
 
 db_pool: Optional[asyncpg.Pool] = None
 
+async def migrate_orders_table():
+    """Add order_number column if not exists - BU YANGI QO'SHILDI!"""
+    async with db_pool.acquire() as conn:
+        # Check if column exists
+        row = await conn.fetchrow("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name='orders' AND column_name='order_number'
+        """)
+        
+        if not row:
+            logger.info("⏳ order_number ustuni qo'shilmoqda...")
+            await conn.execute("""
+                ALTER TABLE orders ADD COLUMN order_number TEXT UNIQUE
+            """)
+            logger.info("✅ order_number ustuni qo'shildi")
+            
+            # Update existing orders with order_number
+            await conn.execute("""
+                UPDATE orders 
+                SET order_number = '#' || to_char(created_at, 'YYMMDDHH24MISS') || '_' || id::text
+                WHERE order_number IS NULL
+            """)
+            logger.info("✅ Mavjud buyurtmalarga order_number berildi")
+        else:
+            logger.info("✅ order_number ustuni allaqachon mavjud")
+
 async def init_db():
     global db_pool
 
@@ -163,11 +190,11 @@ async def init_db():
             )
         """)
 
-        # Orders table
+        # Orders table - TO'G'RILANGAN (order_number qo'shilgan)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
-                order_number TEXT UNIQUE NOT NULL,
+                order_number TEXT UNIQUE,
                 user_id BIGINT NOT NULL,
                 service_type TEXT DEFAULT '',
                 service_name TEXT DEFAULT '',
@@ -244,6 +271,9 @@ async def init_db():
             )
         """)
 
+    # MIGRATION - BU MUHIM!
+    await migrate_orders_table()
+
     logger.info("✅ PostgreSQL database initialized")
 
 # ============================================================
@@ -305,7 +335,7 @@ async def get_masters(service_type: str = None) -> List[Dict]:
 
 async def create_order(data: Dict) -> int:
     """Create new order"""
-    order_number = f"#{datetime.now().strftime('%y%m%d%H%M%S')}"
+    order_number = f"#{datetime.now().strftime('%y%m%d%H%M%S')}_{data['user_id']}"
     
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("""
@@ -326,7 +356,7 @@ async def create_order(data: Dict) -> int:
             data.get('latitude'),
             data.get('longitude'),
             data.get('description', ''),
-            data.get('photo_ids', ''),
+            data.get('photo_ids', '[]'),
             data.get('preferred_time', ''),
             data.get('price', 0),
             'yangi'
