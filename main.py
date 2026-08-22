@@ -5,7 +5,6 @@
 📱 USTA 24 ANDIJON
 🏗️ ONE BOT = CLIENT + MASTER + ADMIN + MASTERS GROUP
 🐘 PostgreSQL with asyncpg
-📦 python-telegram-bot 22.3
 """
 
 import os
@@ -59,7 +58,7 @@ logger = logging.getLogger("USTA24")
 db_pool = None
 
 # ============================================================
-# SERVICES (ТЎҒРИ НОМЛАР БИЛАН)
+# SERVICES
 # ============================================================
 
 SERVICES = [
@@ -76,20 +75,20 @@ SERVICES = [
 ]
 
 SERVICE_SUB = {
-    "🔧 Santexnika": ["🚽 Hojatxona o'rnatish", "🚿 Lavabo o'rnatish", "🔧 Quvur ta'mirlash", "🧹 Kanalizatsiya tozalash", "📋 Boshqa santexnika"],
-    "⚡ Elektr": ["💡 Chiroq o'rnatish", "🔌 Rozetka o'rnatish", "🔧 Sim almashtirish", "⚡ Avtomat o'rnatish", "📋 Boshqa elektr"],
-    "🪑 Mebel yig'ish": ["🪑 Stol yig'ish", "🛋 Divan yig'ish", "🪑 Shkaf yig'ish", "📋 Boshqa mebel"],
-    "🛠 Mebel ta'mirlash": ["🚪 Eshik ta'mirlash", "🪟 Deraza ta'mirlash", "🪑 Mebel ta'mirlash", "📋 Boshqa ta'mirlash"],
-    "🚚 Yuk tashish": ["📦 Kichik yuk (50 kg gacha)", "📦 O'rta yuk (200 kg gacha)", "📦 Katta yuk (500 kg gacha)", "📋 Boshqa yuk"],
-    "🚪 Eshik / qulf": ["🚪 Eshik o'rnatish", "🔐 Qulf almashtirish", "🚪 Eshik ta'mirlash", "📋 Boshqa eshik/qulf"],
-    "🎨 Ta'mirlash / bo'yoq": ["🎨 Devor bo'yash", "🪟 Deraza bo'yash", "🚪 Eshik bo'yash", "📋 Boshqa ta'mirlash"],
-    "❄️ Konditsioner": ["❄️ Konditsioner o'rnatish", "🧹 Konditsioner tozalash", "🔧 Konditsioner ta'mirlash", "📋 Boshqa konditsioner"],
-    "🔥 Gaz xizmati": ["🔥 Gaz plita o'rnatish", "🔧 Gaz quvuri ta'mirlash", "📋 Boshqa gaz xizmati"],
-    "🧰 Boshqa xizmat": ["📋 Boshqa xizmat"],
+    "🔧 Santexnika": ["🚽 Hojatxona o'rnatish", "🚿 Lavabo o'rnatish", "🔧 Quvur ta'mirlash", "🧹 Kanalizatsiya tozalash", "📋 Boshqa"],
+    "⚡ Elektr": ["💡 Chiroq o'rnatish", "🔌 Rozetka o'rnatish", "🔧 Sim almashtirish", "⚡ Avtomat o'rnatish", "📋 Boshqa"],
+    "🪑 Mebel yig'ish": ["🪑 Stol yig'ish", "🛋 Divan yig'ish", "🪑 Shkaf yig'ish", "📋 Boshqa"],
+    "🛠 Mebel ta'mirlash": ["🚪 Eshik ta'mirlash", "🪟 Deraza ta'mirlash", "🪑 Mebel ta'mirlash", "📋 Boshqa"],
+    "🚚 Yuk tashish": ["📦 Kichik yuk", "📦 O'rta yuk", "📦 Katta yuk", "📋 Boshqa"],
+    "🚪 Eshik / qulf": ["🚪 Eshik o'rnatish", "🔐 Qulf almashtirish", "🚪 Eshik ta'mirlash", "📋 Boshqa"],
+    "🎨 Ta'mirlash / bo'yoq": ["🎨 Devor bo'yash", "🪟 Deraza bo'yash", "🚪 Eshik bo'yash", "📋 Boshqa"],
+    "❄️ Konditsioner": ["❄️ Konditsioner o'rnatish", "🧹 Konditsioner tozalash", "🔧 Konditsioner ta'mirlash", "📋 Boshqa"],
+    "🔥 Gaz xizmati": ["🔥 Gaz plita o'rnatish", "🔧 Gaz quvuri ta'mirlash", "📋 Boshqa"],
+    "🧰 Boshqa xizmat": ["📋 Boshqa"],
 }
 
 # ============================================================
-# DATABASE
+# DATABASE - TUGALLANGAN
 # ============================================================
 
 async def init_db():
@@ -106,9 +105,7 @@ async def init_db():
 
     async with db_pool.acquire() as conn:
 
-        # ----------------------------------------------------
         # USERS
-        # ----------------------------------------------------
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS u24_users (
                 id BIGSERIAL PRIMARY KEY,
@@ -123,9 +120,7 @@ async def init_db():
             )
         """)
 
-        # ----------------------------------------------------
-        # ORDERS (order_num to'g'rilandi)
-        # ----------------------------------------------------
+        # ORDERS - TUGALLANGAN
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS u24_orders (
                 id BIGSERIAL PRIMARY KEY,
@@ -156,9 +151,7 @@ async def init_db():
             )
         """)
 
-        # ----------------------------------------------------
         # PHOTOS
-        # ----------------------------------------------------
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS u24_order_photos (
                 id BIGSERIAL PRIMARY KEY,
@@ -169,9 +162,7 @@ async def init_db():
             )
         """)
 
-        # ----------------------------------------------------
         # RATINGS
-        # ----------------------------------------------------
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS u24_ratings (
                 id BIGSERIAL PRIMARY KEY,
@@ -180,14 +171,11 @@ async def init_db():
                 master_id BIGINT NOT NULL,
                 rating INTEGER NOT NULL,
                 comment TEXT NOT NULL DEFAULT '',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                CONSTRAINT u24_rating_value CHECK (rating >= 1 AND rating <= 5)
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
 
-        # ----------------------------------------------------
         # SERVICES
-        # ----------------------------------------------------
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS u24_services (
                 id BIGSERIAL PRIMARY KEY,
@@ -197,19 +185,7 @@ async def init_db():
             )
         """)
 
-        for service in SERVICES:
-            await conn.execute(
-                """
-                INSERT INTO u24_services(name)
-                VALUES($1)
-                ON CONFLICT(name) DO NOTHING
-                """,
-                service,
-            )
-
-        # ----------------------------------------------------
         # BONUSES
-        # ----------------------------------------------------
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS u24_bonuses (
                 id BIGSERIAL PRIMARY KEY,
@@ -221,11 +197,33 @@ async def init_db():
             )
         """)
 
+    # Agar eski order_num bo'lmasa, qo'shish
+    async with db_pool.acquire() as conn:
+        # order_num ustunini tekshirish va qo'shish
+        try:
+            await conn.execute("""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='u24_orders' AND column_name='order_num') THEN
+                        ALTER TABLE u24_orders ADD COLUMN order_num TEXT UNIQUE;
+                    END IF;
+                END $$;
+            """)
+        except Exception as e:
+            logger.warning(f"order_num qo'shishda xatolik: {e}")
+
+        # Mavjud buyurtmalarga order_num berish
+        try:
+            await conn.execute("""
+                UPDATE u24_orders 
+                SET order_num = CONCAT('#', 1000 + id) 
+                WHERE order_num IS NULL OR order_num = ''
+            """)
+        except Exception as e:
+            logger.warning(f"order_num yangilashda xatolik: {e}")
+
     logger.info("✅ PostgreSQL tayyor!")
-
-
-async def get_db():
-    return db_pool
 
 
 # ============================================================
@@ -293,8 +291,6 @@ async def create_order(
     description,
     address,
     order_time,
-    emergency=False,
-    emergency_percent=0,
     latitude=None,
     longitude=None,
 ):
@@ -308,8 +304,8 @@ async def create_order(
             INSERT INTO u24_orders (
                 order_num, customer_id, customer_name, customer_phone,
                 service, sub_service, description, address, order_time,
-                emergency, emergency_percent, latitude, longitude
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                latitude, longitude
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
             RETURNING id
             """,
             order_num,
@@ -321,8 +317,6 @@ async def create_order(
             description,
             address,
             order_time,
-            emergency,
-            emergency_percent,
             latitude,
             longitude,
         )
@@ -446,6 +440,14 @@ async def get_user_orders(user_id):
             LIMIT 20
             """,
             user_id,
+        )
+
+
+async def get_order_photos(order_id):
+    async with db_pool.acquire() as conn:
+        return await conn.fetch(
+            "SELECT * FROM u24_order_photos WHERE order_id = $1",
+            order_id,
         )
 
 
@@ -910,17 +912,35 @@ async def handle_order_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Буюртма топилмади.")
                 return
 
+            # Rasmlarni olish
+            photos = await get_order_photos(order["id"])
+
+            photo_text = ""
+            if photos:
+                photo_text = f"\n📸 Расмлар: {len(photos)} та"
+
             await update.message.reply_text(
                 f"🔍 БУЮРТМА {order['order_num']}\n\n"
                 f"🛠 Хизмат: {order['service']}\n"
+                f"📋 Тури: {order['sub_service']}\n"
                 f"📍 Манзил: {order['address']}\n"
                 f"🕐 Вақт: {order['order_time']}\n"
                 f"📌 Ҳолат: {order['status']}\n"
                 f"👨‍🔧 Уста: {order['master_name'] or 'Ҳали бириктирилмаган'}"
+                f"{photo_text}"
             )
+
+            # Rasmlarni yuborish
+            for photo in photos:
+                try:
+                    await update.message.reply_photo(photo["file_id"])
+                except:
+                    pass
+
             context.user_data["checking_order"] = False
             return
-        except:
+        except Exception as e:
+            logger.error(f"Order check error: {e}")
             await update.message.reply_text("❌ Нотоғри формат. Масалан: 1245")
             return
 
@@ -1026,6 +1046,7 @@ async def order_confirm_action(update: Update, context: ContextTypes.DEFAULT_TYP
             longitude=longitude,
         )
 
+        # Rasmni saqlash (agar bo'lsa)
         if problem_photo:
             await add_photo(order_id, problem_photo, "problem")
 
@@ -1036,7 +1057,8 @@ async def order_confirm_action(update: Update, context: ContextTypes.DEFAULT_TYP
             f"🛠 {service}\n"
             f"📋 {sub_service}\n"
             f"📍 {address}\n"
-            f"🕐 {order_time}\n\n"
+            f"🕐 {order_time}\n"
+            f"📸 Расм: {'✅ Бор' if problem_photo else '❌ Йўқ'}\n\n"
             "👨‍🔧 Усталар қидирилмоқда...\n"
             "📨 Тез орада хабар берамиз!",
             reply_markup=client_menu(),
@@ -1045,7 +1067,7 @@ async def order_confirm_action(update: Update, context: ContextTypes.DEFAULT_TYP
         # Guruhga yuborish
         if MASTERS_GROUP_ID:
             try:
-                await send_order_to_group(context.bot, order_id)
+                await send_order_to_group(context.bot, order_id, problem_photo)
             except Exception as e:
                 logger.error(f"Group send error: {e}")
 
@@ -1059,7 +1081,8 @@ async def order_confirm_action(update: Update, context: ContextTypes.DEFAULT_TYP
                     f"👤 {user.full_name}\n"
                     f"📞 {phone}\n"
                     f"🛠 {service}\n"
-                    f"📍 {address}",
+                    f"📍 {address}\n"
+                    f"📸 Расм: {'✅' if problem_photo else '❌'}",
                 )
             except Exception:
                 pass
@@ -1080,7 +1103,7 @@ async def order_confirm_action(update: Update, context: ContextTypes.DEFAULT_TYP
 # SEND ORDER TO GROUP
 # ============================================================
 
-async def send_order_to_group(bot, order_id):
+async def send_order_to_group(bot, order_id, photo_id=None):
     order = await get_order(order_id)
     if not order:
         return
@@ -1095,6 +1118,7 @@ async def send_order_to_group(bot, order_id):
         f"📝 Муаммо: {order['description']}\n"
         f"📍 Манзил: {order['address']}\n"
         f"🕐 Вақт: {order['order_time']}\n"
+        f"📸 Расм: {'✅ Бор' if photo_id else '❌ Йўқ'}\n"
     )
 
     keyboard = InlineKeyboardMarkup(
@@ -1109,10 +1133,25 @@ async def send_order_to_group(bot, order_id):
             [
                 InlineKeyboardButton("✅ Ишни якунлаш", callback_data=f"complete:{order['id']}"),
             ],
+            [
+                InlineKeyboardButton("📸 Расмни кўриш", callback_data=f"viewphotos:{order['id']}"),
+            ],
         ]
     )
 
-    await bot.send_message(MASTERS_GROUP_ID, text, reply_markup=keyboard)
+    # Agar rasm bo'lsa, rasm bilan yuborish
+    if photo_id:
+        try:
+            await bot.send_photo(
+                MASTERS_GROUP_ID,
+                photo_id,
+                caption=text,
+                reply_markup=keyboard,
+            )
+        except:
+            await bot.send_message(MASTERS_GROUP_ID, text, reply_markup=keyboard)
+    else:
+        await bot.send_message(MASTERS_GROUP_ID, text, reply_markup=keyboard)
 
 
 # ============================================================
@@ -1122,6 +1161,7 @@ async def send_order_to_group(bot, order_id):
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo = update.message.photo[-1]
 
+    # ORDER PHOTO
     if context.user_data.get("order_step") == "photo":
         context.user_data["problem_photo"] = photo.file_id
         context.user_data["order_step"] = "address"
@@ -1134,13 +1174,14 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # COMPLETE WORK PHOTO
     if context.user_data.get("complete_order"):
         order_id = context.user_data["complete_order"]
         await add_photo(order_id, photo.file_id, "result")
 
         await update.message.reply_text(
             "✅ Натижа расми қабул қилинди!\n\n"
-            "💰 Иш нархини ёзинг:"
+            "💰 Иш нархини ёзинг (сўмда):"
         )
         context.user_data["complete_step"] = "price"
         return
@@ -1265,6 +1306,21 @@ async def master_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["complete_order"] = order_id
             return
 
+        # VIEW PHOTOS
+        if action == "viewphotos":
+            photos = await get_order_photos(order_id)
+
+            if not photos:
+                await query.answer("Бу буюртмада расмлар йўқ.")
+                return
+
+            for photo in photos:
+                try:
+                    await query.message.reply_photo(photo["file_id"])
+                except:
+                    pass
+            return
+
     except Exception as e:
         logger.exception("MASTER CALLBACK ERROR")
         await query.message.reply_text("⚠️ Хатолик юз берди.")
@@ -1290,11 +1346,15 @@ async def client_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         out = "📋 МЕНИНГ БУЮРТМАЛАРИМ\n\n"
         for row in orders:
+            photos = await get_order_photos(row["id"])
+            photo_text = f"📸 {len(photos)} та расм" if photos else "📸 Расм йўқ"
+
             out += (
                 f"🆔 {row['order_num']}\n"
                 f"🛠 {row['service']}\n"
                 f"📍 {row['address']}\n"
                 f"📌 {row['status']}\n"
+                f"{photo_text}\n"
                 f"📅 {row['created_at'].strftime('%d.%m.%Y %H:%M') if row['created_at'] else ''}\n\n"
             )
         await update.message.reply_text(out)
@@ -1438,7 +1498,9 @@ async def master_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         out = "📋 ЯНГИ БУЮРТМАЛАР\n\n"
         for row in rows:
-            out += f"🆔 {row['order_num']}\n🛠 {row['service']}\n📍 {row['address']}\n📌 {row['status']}\n\n"
+            photos = await get_order_photos(row["id"])
+            photo_text = f"📸 {len(photos)} та расм" if photos else "📸 Расм йўқ"
+            out += f"🆔 {row['order_num']}\n🛠 {row['service']}\n📍 {row['address']}\n📌 {row['status']}\n{photo_text}\n\n"
         await update.message.reply_text(out)
         return
 
@@ -1455,7 +1517,9 @@ async def master_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         out = "✅ ФАОЛ БУЮРТМАЛАР\n\n"
         for row in rows:
-            out += f"🆔 {row['order_num']}\n🛠 {row['service']}\n📍 {row['address']}\n📌 {row['status']}\n\n"
+            photos = await get_order_photos(row["id"])
+            photo_text = f"📸 {len(photos)} та расм" if photos else "📸 Расм йўқ"
+            out += f"🆔 {row['order_num']}\n🛠 {row['service']}\n📍 {row['address']}\n📌 {row['status']}\n{photo_text}\n\n"
         await update.message.reply_text(out)
         return
 
@@ -1634,7 +1698,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("master", master_command))
 
-    application.add_handler(CallbackQueryHandler(master_callback, pattern=r"^(accept|reject|startwork|complete):\d+$"))
+    application.add_handler(CallbackQueryHandler(master_callback, pattern=r"^(accept|reject|startwork|complete|viewphotos):\d+$"))
 
     application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     application.add_handler(MessageHandler(filters.LOCATION, location_handler))
