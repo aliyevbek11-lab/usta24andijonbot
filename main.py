@@ -31,6 +31,8 @@ import asyncio
 import logging
 import json
 import threading
+import signal
+import sys
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 
@@ -58,11 +60,29 @@ from telegram.ext import (
 )
 
 # ============================================================
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger("USTA24")
+
+# ============================================================
 # CONFIG
 # ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+if not BOT_TOKEN:
+    logger.error("❌ BOT_TOKEN topilmadi!")
+    sys.exit(1)
+
+if not DATABASE_URL:
+    logger.error("❌ DATABASE_URL topilmadi!")
+    sys.exit(1)
 
 MASTERS_GROUP_ID = int(os.getenv("MASTERS_GROUP_ID", "0").strip() or "0")
 DISPATCHER_ID = int(os.getenv("DISPATCHER_ID", "0").strip() or "0")
@@ -89,7 +109,7 @@ if admin_ids:
 if DISPATCHER_ID:
     ADMIN_IDS.add(DISPATCHER_ID)
 
-logger = logging.getLogger("USTA24")
+logger.info(f"✅ ADMIN_IDS: {ADMIN_IDS}")
 
 # ============================================================
 # FLASK SERVER
@@ -116,7 +136,7 @@ def run_flask():
 db_pool: Optional[asyncpg.Pool] = None
 
 async def migrate_orders_table():
-    """Add order_number column if not exists - BU YANGI QO'SHILDI!"""
+    """Add order_number column if not exists"""
     async with db_pool.acquire() as conn:
         # Check if column exists
         row = await conn.fetchrow("""
@@ -190,7 +210,7 @@ async def init_db():
             )
         """)
 
-        # Orders table - TO'G'RILANGAN (order_number qo'shilgan)
+        # Orders table - WITH order_number
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
@@ -652,35 +672,41 @@ def get_service_info(service_name: str) -> Optional[Dict]:
 # SEND NOTIFICATIONS
 # ============================================================
 
+application: Application = None
+
 async def send_message(user_id: int, text: str, keyboard=None, parse_mode=None):
     """Send message to user"""
+    global application
     try:
-        if keyboard:
-            await application.bot.send_message(
-                chat_id=user_id,
-                text=text,
-                reply_markup=keyboard,
-                parse_mode=parse_mode or ParseMode.HTML
-            )
-        else:
-            await application.bot.send_message(
-                chat_id=user_id,
-                text=text,
-                parse_mode=parse_mode or ParseMode.HTML
-            )
+        if application and application.bot:
+            if keyboard:
+                await application.bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    reply_markup=keyboard,
+                    parse_mode=parse_mode or ParseMode.HTML
+                )
+            else:
+                await application.bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    parse_mode=parse_mode or ParseMode.HTML
+                )
     except Exception as e:
         logger.error(f"Xabar yuborishda xatolik: {e}")
 
 async def send_photo(user_id: int, photo_id: str, caption: str = None, keyboard=None):
     """Send photo to user"""
+    global application
     try:
-        await application.bot.send_photo(
-            chat_id=user_id,
-            photo=photo_id,
-            caption=caption,
-            reply_markup=keyboard,
-            parse_mode=ParseMode.HTML
-        )
+        if application and application.bot:
+            await application.bot.send_photo(
+                chat_id=user_id,
+                photo=photo_id,
+                caption=caption,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
     except Exception as e:
         logger.error(f"Rasm yuborishda xatolik: {e}")
 
@@ -2538,6 +2564,8 @@ application: Application = None
 async def main():
     global application
     
+    logger.info("🚀 USTA24 DISPATCHER боти ишга тушмоқда...")
+    
     # Init database
     await init_db()
     
@@ -2794,13 +2822,27 @@ async def main():
         await asyncio.sleep(1)
 
 # ============================================================
+# SIGNAL HANDLERS
+# ============================================================
+
+def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully"""
+    logger.info("🛑 Бот тўхтатилмоқда...")
+    sys.exit(0)
+
+# ============================================================
 # RUN
 # ============================================================
 
 if __name__ == "__main__":
+    # Set signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("🛑 Бот тўхтатилди!")
     except Exception as e:
         logger.error(f"❌ Хатолик: {e}")
+        sys.exit(1)
