@@ -44,10 +44,14 @@ async def _has_column(conn, table, column):
 
 
 async def _ensure_columns(conn, table, columns):
-    # Identifiers come only from our hard-coded dictionaries above.
+    # Add missing columns safely. Existing old databases may not have an `id` column.
+    # BIGSERIAL fills old rows and gives new rows an automatic id.
     for column, sql_type in columns.items():
         if not await _has_column(conn, table, column):
-            await conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{column}" {sql_type}')
+            if column == "id":
+                await conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "id" BIGSERIAL')
+            else:
+                await conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{column}" {sql_type}')
 
 
 async def db_init():
@@ -129,6 +133,7 @@ async def db_init():
         """)
 
         await _ensure_columns(c, "users", {
+            "id": "BIGSERIAL",
             "telegram_id": "BIGINT", "name": "TEXT DEFAULT ''",
             "phone": "TEXT DEFAULT ''", "username": "TEXT DEFAULT ''",
             "role": "TEXT NOT NULL DEFAULT 'client'",
@@ -136,19 +141,16 @@ async def db_init():
             "created_at": "TIMESTAMPTZ DEFAULT NOW()"
         })
 
+        # Migrate legacy Telegram-ID columns only when they really exist.
+        # IMPORTANT: never assume that users.id is an old Telegram ID.
+        # Old databases can have a completely different schema.
         legacy_user_cols = ("telegram", "tg_id", "user_id_telegram", "telegram_user_id")
-        legacy_exists = False
         for oldcol in legacy_user_cols:
             if await _has_column(c, "users", oldcol):
-                legacy_exists = True
                 await c.execute(
                     f'UPDATE users SET telegram_id="{oldcol}" '
                     f'WHERE telegram_id IS NULL AND "{oldcol}" IS NOT NULL'
                 )
-        if not legacy_exists:
-            await c.execute(
-                "UPDATE users SET telegram_id=id WHERE telegram_id IS NULL"
-            )
 
         await c.execute("""
             DELETE FROM users a USING users b
@@ -161,12 +163,14 @@ async def db_init():
         """)
 
         await _ensure_columns(c, "masters", {
+            "id": "BIGSERIAL",
             "user_id": "BIGINT",
             "specialty": "TEXT DEFAULT 'Барча хизматлар'",
             "is_active": "BOOLEAN DEFAULT TRUE",
             "is_busy": "BOOLEAN DEFAULT FALSE"
         })
         await _ensure_columns(c, "dispatchers", {
+            "id": "BIGSERIAL",
             "user_id": "BIGINT", "is_active": "BOOLEAN DEFAULT TRUE"
         })
 
@@ -199,6 +203,7 @@ async def db_init():
         """)
 
         await _ensure_columns(c, "orders", {
+            "id": "BIGSERIAL",
             "customer_id": "BIGINT", "master_id": "BIGINT",
             "dispatcher_id": "BIGINT", "service_category": "TEXT",
             "service_name": "TEXT", "customer_name": "TEXT",
@@ -231,20 +236,24 @@ async def db_init():
                     break
 
         await _ensure_columns(c, "order_photos", {
+            "id": "BIGSERIAL",
             "order_id": "BIGINT", "photo_id": "TEXT",
             "photo_type": "TEXT", "created_at": "TIMESTAMPTZ DEFAULT NOW()"
         })
         await _ensure_columns(c, "order_history", {
+            "id": "BIGSERIAL",
             "order_id": "BIGINT", "old_status": "TEXT",
             "new_status": "TEXT", "changed_by": "BIGINT",
             "note": "TEXT DEFAULT ''", "created_at": "TIMESTAMPTZ DEFAULT NOW()"
         })
         await _ensure_columns(c, "ratings", {
+            "id": "BIGSERIAL",
             "order_id": "BIGINT", "customer_id": "BIGINT",
             "master_id": "BIGINT", "rating": "INT",
             "created_at": "TIMESTAMPTZ DEFAULT NOW()"
         })
         await _ensure_columns(c, "services", {
+            "id": "BIGSERIAL",
             "category": "TEXT", "name": "TEXT", "description": "TEXT",
             "price": "TEXT DEFAULT 'Келишилади'",
             "is_active": "BOOLEAN DEFAULT TRUE"
