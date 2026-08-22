@@ -32,33 +32,307 @@ def disp_kb(): return ReplyKeyboardMarkup([['🆕 Янги буюртмалар'
 def admin_kb(): return ReplyKeyboardMarkup([['📊 Dashboard','👨‍🔧 Усталар'],['🎧 Dispatcherлар','👤 Мижозлар'],['📋 Буюртмалар','🛠 Хизматлар'],['💰 Нархлар','💰 Молия'],['📈 Статистика','➕ Ходим қўшиш'],['🏠 Асосий меню']],resize_keyboard=True)
 def cancel_kb(): return ReplyKeyboardMarkup([['❌ Бекор қилиш']],resize_keyboard=True)
 
+async def _has_column(conn, table, column):
+    return await conn.fetchval("""
+        SELECT EXISTS(
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = $1
+              AND column_name = $2
+        )
+    """, table, column)
+
+
+async def _ensure_columns(conn, table, columns):
+    # Identifiers come only from our hard-coded dictionaries above.
+    for column, sql_type in columns.items():
+        if not await _has_column(conn, table, column):
+            await conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{column}" {sql_type}')
+
+
 async def db_init():
- global pool
- pool=await asyncpg.create_pool(DATABASE_URL,min_size=1,max_size=10)
- async with pool.acquire() as c:
-  await c.execute('''CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,telegram_id BIGINT UNIQUE NOT NULL,name TEXT DEFAULT '',phone TEXT DEFAULT '',username TEXT DEFAULT '',role TEXT NOT NULL DEFAULT 'client',is_active BOOLEAN DEFAULT TRUE,created_at TIMESTAMPTZ DEFAULT NOW())''')
-  await c.execute('''CREATE TABLE IF NOT EXISTS masters(id BIGSERIAL PRIMARY KEY,user_id BIGINT UNIQUE REFERENCES users(id) ON DELETE CASCADE,specialty TEXT DEFAULT 'Барча хизматлар',is_active BOOLEAN DEFAULT TRUE,is_busy BOOLEAN DEFAULT FALSE)''')
-  await c.execute('''CREATE TABLE IF NOT EXISTS dispatchers(id BIGSERIAL PRIMARY KEY,user_id BIGINT UNIQUE REFERENCES users(id) ON DELETE CASCADE,is_active BOOLEAN DEFAULT TRUE)''')
-  await c.execute('''CREATE TABLE IF NOT EXISTS orders(id BIGSERIAL PRIMARY KEY,customer_id BIGINT REFERENCES users(id),master_id BIGINT REFERENCES users(id),dispatcher_id BIGINT REFERENCES users(id),service_category TEXT,service_name TEXT,customer_name TEXT,customer_phone TEXT,address TEXT,latitude DOUBLE PRECISION,longitude DOUBLE PRECISION,description TEXT,status TEXT DEFAULT 'new',reject_reason TEXT DEFAULT '',rejected_master_ids BIGINT[] DEFAULT '{}',created_at TIMESTAMPTZ DEFAULT NOW(),accepted_at TIMESTAMPTZ,started_at TIMESTAMPTZ,completed_at TIMESTAMPTZ,updated_at TIMESTAMPTZ DEFAULT NOW())''')
-  await c.execute('''CREATE TABLE IF NOT EXISTS order_photos(id BIGSERIAL PRIMARY KEY,order_id BIGINT REFERENCES orders(id) ON DELETE CASCADE,photo_id TEXT,photo_type TEXT,created_at TIMESTAMPTZ DEFAULT NOW())''')
-  await c.execute('''CREATE TABLE IF NOT EXISTS order_history(id BIGSERIAL PRIMARY KEY,order_id BIGINT REFERENCES orders(id) ON DELETE CASCADE,old_status TEXT,new_status TEXT,changed_by BIGINT,note TEXT DEFAULT '',created_at TIMESTAMPTZ DEFAULT NOW())''')
-  await c.execute('''CREATE TABLE IF NOT EXISTS ratings(id BIGSERIAL PRIMARY KEY,order_id BIGINT UNIQUE REFERENCES orders(id) ON DELETE CASCADE,customer_id BIGINT,master_id BIGINT,rating INT CHECK(rating BETWEEN 1 AND 5),created_at TIMESTAMPTZ DEFAULT NOW())''')
-  await c.execute('''CREATE TABLE IF NOT EXISTS services(id BIGSERIAL PRIMARY KEY,category TEXT,name TEXT,description TEXT,price TEXT DEFAULT 'Келишилади',is_active BOOLEAN DEFAULT TRUE)''')
-  if not await c.fetchval('SELECT COUNT(*) FROM services'):
-   data=[
-    ('Мебель','Мебель йиғиш','Шкаф, стол, стул ва бошқа мебель йиғиш'),('Мебель','Мебель таъмирлаш','Мебель таъмири'),('Мебель','Мебель демонтаж','Мебельни ечиш'),('Мебель','Мебель монтаж','Мебель ўрнатиш'),('Мебель','Мебель қайта йиғиш','Қайта йиғиш'),
-    ('Кухня','Кухня йиғиш','Кухня гарнитурини йиғиш'),('Кухня','Кухня таъмирлаш','Кухня мебель таъмири'),('Кухня','Кухня демонтаж','Кухняни ечиш'),('Кухня','Кухня монтаж','Кухняни ўрнатиш'),('Кухня','Кухня ўрнатиш','Тўлиқ ўрнатиш'),
-    ('Шкаф','Шкаф йиғиш','Шкаф йиғиш'),('Шкаф','Шкаф таъмирлаш','Шкаф таъмири'),('Шкаф','Шкаф демонтаж','Шкафни ечиш'),('Шкаф','Шкаф монтаж','Шкаф ўрнатиш'),('Шкаф','Купе шкаф','Купе шкаф хизмати'),
-    ('Кровать','Кровать йиғиш','Кровать йиғиш'),('Кровать','Кровать таъмирлаш','Кровать таъмири'),('Кровать','Кровать демонтаж','Кроватьни ечиш'),
-    ('Стол/стул','Стол/стул йиғиш','Стол ва стул йиғиш'),('Стол/стул','Стол/стул таъмирлаш','Таъмирлаш'),('Стол/стул','Стол/стул монтаж','Ўрнатиш'),
-    ('Диван','Диван таъмирлаш','Диван таъмири'),('Диван','Диван демонтаж','Диванни ечиш'),('Диван','Диван йиғиш','Диван йиғиш'),
-    ('Мебель ташиш','Уйдан уйга','Мебельни уйдан уйга ташиш'),('Мебель ташиш','Машина билан','Машина билан ташиш'),('Мебель ташиш','Юклаш','Юклаш хизмати'),('Мебель ташиш','Тушириш','Тушириш хизмати'),('Мебель ташиш','Тўлиқ ташиш хизмати','Юклаш+ташиш+тушириш'),
-    ('Уй кўчириш','Қадоқлаш','Қадоқлаш'),('Уй кўчириш','Ташиш','Ташиш'),('Уй кўчириш','Юклаш','Юклаш'),('Уй кўчириш','Тушириш','Тушириш'),('Уй кўчириш','Тўлиқ кўчириш','Тўлиқ кўчириш')]
-   await c.executemany('INSERT INTO services(category,name,description) VALUES($1,$2,$3)',data)
- await user_upsert(ADMIN_ID,'Admin','','',ADMIN)
- if DISPATCHER_ID:
-  await user_upsert(DISPATCHER_ID,'Dispatcher',DISPATCHER_PHONE,'',DISPATCHER)
-  async with pool.acquire() as c: await c.execute("INSERT INTO dispatchers(user_id) SELECT id FROM users WHERE telegram_id=$1 ON CONFLICT(user_id) DO UPDATE SET is_active=TRUE",DISPATCHER_ID)
+    """Create/migrate the complete PostgreSQL schema before any queries run."""
+    global pool
+    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+
+    async with pool.acquire() as c:
+        await c.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id BIGSERIAL PRIMARY KEY,
+                telegram_id BIGINT,
+                name TEXT DEFAULT '',
+                phone TEXT DEFAULT '',
+                username TEXT DEFAULT '',
+                role TEXT NOT NULL DEFAULT 'client',
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await c.execute("""
+            CREATE TABLE IF NOT EXISTS masters (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT,
+                specialty TEXT DEFAULT 'Барча хизматлар',
+                is_active BOOLEAN DEFAULT TRUE,
+                is_busy BOOLEAN DEFAULT FALSE
+            )
+        """)
+        await c.execute("""
+            CREATE TABLE IF NOT EXISTS dispatchers (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT,
+                is_active BOOLEAN DEFAULT TRUE
+            )
+        """)
+        await c.execute("""
+            CREATE TABLE IF NOT EXISTS orders (
+                id BIGSERIAL PRIMARY KEY,
+                customer_id BIGINT, master_id BIGINT, dispatcher_id BIGINT,
+                service_category TEXT, service_name TEXT,
+                customer_name TEXT, customer_phone TEXT, address TEXT,
+                latitude DOUBLE PRECISION, longitude DOUBLE PRECISION,
+                description TEXT, status TEXT DEFAULT 'new',
+                reject_reason TEXT DEFAULT '',
+                rejected_master_ids BIGINT[] DEFAULT '{}',
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                accepted_at TIMESTAMPTZ, started_at TIMESTAMPTZ,
+                completed_at TIMESTAMPTZ, updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await c.execute("""
+            CREATE TABLE IF NOT EXISTS order_photos (
+                id BIGSERIAL PRIMARY KEY, order_id BIGINT,
+                photo_id TEXT, photo_type TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await c.execute("""
+            CREATE TABLE IF NOT EXISTS order_history (
+                id BIGSERIAL PRIMARY KEY, order_id BIGINT,
+                old_status TEXT, new_status TEXT, changed_by BIGINT,
+                note TEXT DEFAULT '', created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await c.execute("""
+            CREATE TABLE IF NOT EXISTS ratings (
+                id BIGSERIAL PRIMARY KEY, order_id BIGINT,
+                customer_id BIGINT, master_id BIGINT, rating INT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await c.execute("""
+            CREATE TABLE IF NOT EXISTS services (
+                id BIGSERIAL PRIMARY KEY, category TEXT, name TEXT,
+                description TEXT, price TEXT DEFAULT 'Келишилади',
+                is_active BOOLEAN DEFAULT TRUE
+            )
+        """)
+
+        await _ensure_columns(c, "users", {
+            "telegram_id": "BIGINT", "name": "TEXT DEFAULT ''",
+            "phone": "TEXT DEFAULT ''", "username": "TEXT DEFAULT ''",
+            "role": "TEXT NOT NULL DEFAULT 'client'",
+            "is_active": "BOOLEAN DEFAULT TRUE",
+            "created_at": "TIMESTAMPTZ DEFAULT NOW()"
+        })
+
+        legacy_user_cols = ("telegram", "tg_id", "user_id_telegram", "telegram_user_id")
+        legacy_exists = False
+        for oldcol in legacy_user_cols:
+            if await _has_column(c, "users", oldcol):
+                legacy_exists = True
+                await c.execute(
+                    f'UPDATE users SET telegram_id="{oldcol}" '
+                    f'WHERE telegram_id IS NULL AND "{oldcol}" IS NOT NULL'
+                )
+        if not legacy_exists:
+            await c.execute(
+                "UPDATE users SET telegram_id=id WHERE telegram_id IS NULL"
+            )
+
+        await c.execute("""
+            DELETE FROM users a USING users b
+            WHERE a.telegram_id IS NOT NULL
+              AND a.telegram_id=b.telegram_id AND a.id>b.id
+        """)
+        await c.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS users_telegram_id_uq
+            ON users(telegram_id) WHERE telegram_id IS NOT NULL
+        """)
+
+        await _ensure_columns(c, "masters", {
+            "user_id": "BIGINT",
+            "specialty": "TEXT DEFAULT 'Барча хизматлар'",
+            "is_active": "BOOLEAN DEFAULT TRUE",
+            "is_busy": "BOOLEAN DEFAULT FALSE"
+        })
+        await _ensure_columns(c, "dispatchers", {
+            "user_id": "BIGINT", "is_active": "BOOLEAN DEFAULT TRUE"
+        })
+
+        for table in ("masters", "dispatchers"):
+            for oldcol in ("telegram_id", "tg_id"):
+                if await _has_column(c, table, oldcol):
+                    await c.execute(
+                        f'UPDATE "{table}" s SET user_id=u.id '
+                        f'FROM users u WHERE s.user_id IS NULL '
+                        f'AND u.telegram_id=s."{oldcol}"'
+                    )
+
+        await c.execute("""
+            DELETE FROM masters a USING masters b
+            WHERE a.user_id IS NOT NULL
+              AND a.user_id=b.user_id AND a.id>b.id
+        """)
+        await c.execute("""
+            DELETE FROM dispatchers a USING dispatchers b
+            WHERE a.user_id IS NOT NULL
+              AND a.user_id=b.user_id AND a.id>b.id
+        """)
+        await c.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS masters_user_id_uq
+            ON masters(user_id) WHERE user_id IS NOT NULL
+        """)
+        await c.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS dispatchers_user_id_uq
+            ON dispatchers(user_id) WHERE user_id IS NOT NULL
+        """)
+
+        await _ensure_columns(c, "orders", {
+            "customer_id": "BIGINT", "master_id": "BIGINT",
+            "dispatcher_id": "BIGINT", "service_category": "TEXT",
+            "service_name": "TEXT", "customer_name": "TEXT",
+            "customer_phone": "TEXT", "address": "TEXT",
+            "latitude": "DOUBLE PRECISION", "longitude": "DOUBLE PRECISION",
+            "description": "TEXT", "status": "TEXT DEFAULT 'new'",
+            "reject_reason": "TEXT DEFAULT ''",
+            "rejected_master_ids": "BIGINT[] DEFAULT '{}'",
+            "created_at": "TIMESTAMPTZ DEFAULT NOW()",
+            "accepted_at": "TIMESTAMPTZ", "started_at": "TIMESTAMPTZ",
+            "completed_at": "TIMESTAMPTZ",
+            "updated_at": "TIMESTAMPTZ DEFAULT NOW()"
+        })
+
+        legacy_order_map = {
+            "customer_id": ("client_id", "user_id"),
+            "master_id": ("usta_id", "master_user_id"),
+            "customer_name": ("name",),
+            "customer_phone": ("phone",),
+            "service_name": ("service",),
+            "description": ("details", "comment", "note")
+        }
+        for target, candidates in legacy_order_map.items():
+            for oldcol in candidates:
+                if await _has_column(c, "orders", oldcol):
+                    await c.execute(
+                        f'UPDATE orders SET "{target}"="{oldcol}" '
+                        f'WHERE "{target}" IS NULL AND "{oldcol}" IS NOT NULL'
+                    )
+                    break
+
+        await _ensure_columns(c, "order_photos", {
+            "order_id": "BIGINT", "photo_id": "TEXT",
+            "photo_type": "TEXT", "created_at": "TIMESTAMPTZ DEFAULT NOW()"
+        })
+        await _ensure_columns(c, "order_history", {
+            "order_id": "BIGINT", "old_status": "TEXT",
+            "new_status": "TEXT", "changed_by": "BIGINT",
+            "note": "TEXT DEFAULT ''", "created_at": "TIMESTAMPTZ DEFAULT NOW()"
+        })
+        await _ensure_columns(c, "ratings", {
+            "order_id": "BIGINT", "customer_id": "BIGINT",
+            "master_id": "BIGINT", "rating": "INT",
+            "created_at": "TIMESTAMPTZ DEFAULT NOW()"
+        })
+        await _ensure_columns(c, "services", {
+            "category": "TEXT", "name": "TEXT", "description": "TEXT",
+            "price": "TEXT DEFAULT 'Келишилади'",
+            "is_active": "BOOLEAN DEFAULT TRUE"
+        })
+
+        await c.execute("""
+            DELETE FROM ratings a USING ratings b
+            WHERE a.order_id IS NOT NULL
+              AND a.order_id=b.order_id AND a.id>b.id
+        """)
+        await c.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ratings_order_id_uq
+            ON ratings(order_id) WHERE order_id IS NOT NULL
+        """)
+
+        required = {
+            "users": ("id","telegram_id","name","phone","username","role","is_active","created_at"),
+            "masters": ("id","user_id","specialty","is_active","is_busy"),
+            "dispatchers": ("id","user_id","is_active"),
+            "orders": ("id","customer_id","master_id","dispatcher_id","service_category",
+                       "service_name","customer_name","customer_phone","address","latitude",
+                       "longitude","description","status","reject_reason","rejected_master_ids",
+                       "created_at","accepted_at","started_at","completed_at","updated_at"),
+            "order_photos": ("id","order_id","photo_id","photo_type","created_at"),
+            "order_history": ("id","order_id","old_status","new_status","changed_by","note","created_at"),
+            "ratings": ("id","order_id","customer_id","master_id","rating","created_at"),
+            "services": ("id","category","name","description","price","is_active")
+        }
+        missing = []
+        for table, cols in required.items():
+            for col in cols:
+                if not await _has_column(c, table, col):
+                    missing.append(f"{table}.{col}")
+        if missing:
+            raise RuntimeError("DATABASE MIGRATION FAILED: " + ", ".join(missing))
+
+        if not await c.fetchval("SELECT COUNT(*) FROM services"):
+            data = [
+                ("Мебель","Мебель йиғиш","Шкаф, стол, стул ва бошқа мебель йиғиш"),
+                ("Мебель","Мебель таъмирлаш","Мебель таъмири"),
+                ("Мебель","Мебель демонтаж","Мебельни ечиш"),
+                ("Мебель","Мебель монтаж","Мебель ўрнатиш"),
+                ("Мебель","Мебель қайта йиғиш","Қайта йиғиш"),
+                ("Кухня","Кухня йиғиш","Кухня гарнитурини йиғиш"),
+                ("Кухня","Кухня таъмирлаш","Кухня мебель таъмири"),
+                ("Кухня","Кухня демонтаж","Кухняни ечиш"),
+                ("Кухня","Кухня монтаж","Кухняни ўрнатиш"),
+                ("Кухня","Кухня ўрнатиш","Тўлиқ ўрнатиш"),
+                ("Шкаф","Шкаф йиғиш","Шкаф йиғиш"),
+                ("Шкаф","Шкаф таъмирлаш","Шкаф таъмири"),
+                ("Шкаф","Шкаф демонтаж","Шкафни ечиш"),
+                ("Шкаф","Шкаф монтаж","Шкаф ўрнатиш"),
+                ("Шкаф","Купе шкаф","Купе шкаф хизмати"),
+                ("Кровать","Кровать йиғиш","Кровать йиғиш"),
+                ("Кровать","Кровать таъмирлаш","Кровать таъмири"),
+                ("Кровать","Кровать демонтаж","Кроватьни ечиш"),
+                ("Стол/стул","Стол/стул йиғиш","Стол ва стул йиғиш"),
+                ("Стол/стул","Стол/стул таъмирлаш","Таъмирлаш"),
+                ("Стол/стул","Стол/стул монтаж","Ўрнатиш"),
+                ("Диван","Диван таъмирлаш","Диван таъмири"),
+                ("Диван","Диван демонтаж","Диванни ечиш"),
+                ("Диван","Диван йиғиш","Диван йиғиш"),
+                ("Мебель ташиш","Уйдан уйга","Мебельни уйдан уйга ташиш"),
+                ("Мебель ташиш","Машина билан","Машина билан ташиш"),
+                ("Мебель ташиш","Юклаш","Юклаш хизмати"),
+                ("Мебель ташиш","Тушириш","Тушириш хизмати"),
+                ("Мебель ташиш","Тўлиқ ташиш хизмати","Юклаш+ташиш+тушириш"),
+                ("Уй кўчириш","Қадоқлаш","Қадоқлаш"),
+                ("Уй кўчириш","Ташиш","Ташиш"),
+                ("Уй кўчириш","Юклаш","Юклаш"),
+                ("Уй кўчириш","Тушириш","Тушириш"),
+                ("Уй кўчириш","Тўлиқ кўчириш","Тўлиқ кўчириш")
+            ]
+            await c.executemany(
+                "INSERT INTO services(category,name,description) VALUES($1,$2,$3)",
+                data
+            )
+
+    await user_upsert(ADMIN_ID, "Admin", "", "", ADMIN)
+    if DISPATCHER_ID:
+        await user_upsert(DISPATCHER_ID, "Dispatcher", DISPATCHER_PHONE, "", DISPATCHER)
+        async with pool.acquire() as c:
+            await c.execute("""
+                INSERT INTO dispatchers(user_id)
+                SELECT id FROM users WHERE telegram_id=$1
+                ON CONFLICT(user_id) DO UPDATE SET is_active=TRUE
+            """, DISPATCHER_ID)
+    log.info("PostgreSQL schema verified and migrated successfully")
 
 async def user_upsert(tid,name='',phone='',username='',role=CLIENT):
  async with pool.acquire() as c:
@@ -312,7 +586,7 @@ async def admin_router(update,context):
 async def master_router(update,context):
  t=update.message.text
  if t=='🆕 Янги буюртмалар':
-  uid=await pool.fetchval('SELECT id FROM users WHERE telegram_id=$1',update.effective_user.id)
+  async with pool.acquire() as c: uid=await c.fetchval('SELECT id FROM users WHERE telegram_id=$1',update.effective_user.id)
   async with pool.acquire() as c:rs=await c.fetch("SELECT id,service_name,status FROM orders WHERE status IN('new','searching') AND NOT($1=ANY(COALESCE(rejected_master_ids,'{}'))) ORDER BY id DESC LIMIT 30",uid or 0)
   await update.message.reply_text('🆕 ЯНГИ БУЮРТМАЛАР',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f'№{x["id"]} 🔎 {x["service_name"][:25]}',callback_data=f'view:{x["id"]}')] for x in rs])) if rs else await update.message.reply_text('📭 Янги буюртма йўқ.')
  elif t=='📋 Менинг буюртмаларим':await list_orders(update,context)
@@ -355,11 +629,11 @@ async def error(update,context):log.exception('Unhandled error',exc_info=context
 def build():
  global app
  app=Application.builder().token(BOT_TOKEN).post_init(post_init).post_shutdown(shutdown).build()
- order=ConversationHandler(entry_points=[CallbackQueryHandler(svc_cb,r'^svc:\d+$'),CallbackQueryHandler(custom_cb,r'^custom$')],states={0:[MessageHandler(filters.TEXT & ~filters.COMMAND,oname)],1:[MessageHandler(filters.CONTACT|filters.TEXT & ~filters.COMMAND,ophone)],2:[MessageHandler(filters.LOCATION|filters.TEXT & ~filters.COMMAND,oloc)],3:[MessageHandler(filters.TEXT & ~filters.COMMAND,oaddr)],4:[MessageHandler(filters.TEXT & ~filters.COMMAND,odesc)],5:[MessageHandler(filters.PHOTO|filters.TEXT & ~filters.COMMAND,ophotos)],6:[CallbackQueryHandler(order_cb,r'^(submit|cancel_form|edit)$') ]},fallbacks=[CommandHandler('start',start)],allow_reentry=True)
+ order=ConversationHandler(entry_points=[CallbackQueryHandler(svc_cb,r'^svc:\d+$'),CallbackQueryHandler(custom_cb,r'^custom$')],states={0:[MessageHandler(filters.TEXT & ~filters.COMMAND,oname)],1:[MessageHandler((filters.CONTACT | filters.TEXT) & ~filters.COMMAND,ophone)],2:[MessageHandler((filters.LOCATION | filters.TEXT) & ~filters.COMMAND,oloc)],3:[MessageHandler(filters.TEXT & ~filters.COMMAND,oaddr)],4:[MessageHandler(filters.TEXT & ~filters.COMMAND,odesc)],5:[MessageHandler((filters.PHOTO | filters.TEXT) & ~filters.COMMAND,ophotos)],6:[CallbackQueryHandler(order_cb,r'^(submit|cancel_form|edit)$') ]},fallbacks=[CommandHandler('start',start)],allow_reentry=True)
  app.add_handler(order)
  app.add_handler(ConversationHandler(entry_points=[CallbackQueryHandler(reject_cb,r'^r:\d+$')],states={REJECT_STATE:[MessageHandler(filters.TEXT & ~filters.COMMAND,reject_text)]},fallbacks=[CommandHandler('start',start)]))
- app.add_handler(ConversationHandler(entry_points=[CallbackQueryHandler(finish_cb,r'^f:\d+$')],states={FINISH_PHOTO:[MessageHandler(filters.PHOTO|filters.TEXT & ~filters.COMMAND,finish_photo)],FINISH_NOTE:[MessageHandler(filters.TEXT & ~filters.COMMAND,finish_note)]},fallbacks=[CommandHandler('start',start)]))
- app.add_handler(ConversationHandler(entry_points=[MessageHandler(filters.Regex(r'^👨‍🔧 Уста қўшиш$|^🎧 Dispatcher қўшиш$'),staff_start)],states={0:[MessageHandler(filters.CONTACT|filters.TEXT & ~filters.COMMAND,staff_contact)],1:[MessageHandler(filters.TEXT & ~filters.COMMAND,staff_specialty)]},fallbacks=[CommandHandler('start',start)]))
+ app.add_handler(ConversationHandler(entry_points=[CallbackQueryHandler(finish_cb,r'^f:\d+$')],states={FINISH_PHOTO:[MessageHandler(filters.PHOTO,finish_photo),MessageHandler(filters.Regex(r'^❌ Бекор қилиш$'),finish_photo)],FINISH_NOTE:[MessageHandler(filters.TEXT & ~filters.COMMAND,finish_note)]},fallbacks=[CommandHandler('start',start)]))
+ app.add_handler(ConversationHandler(entry_points=[MessageHandler(filters.Regex(r'^👨‍🔧 Уста қўшиш$|^🎧 Dispatcher қўшиш$'),staff_start)],states={0:[MessageHandler((filters.CONTACT | filters.TEXT) & ~filters.COMMAND,staff_contact)],1:[MessageHandler(filters.TEXT & ~filters.COMMAND,staff_specialty)]},fallbacks=[CommandHandler('start',start)]))
  app.add_handler(CallbackQueryHandler(accept_cb,r'^a:\d+$'));app.add_handler(CallbackQueryHandler(status_cb,r'^s:\d+:(on_way|arrived|started|paused|payment)$'));app.add_handler(CallbackQueryHandler(rate_cb,r'^rate:\d+:[1-5]$'));app.add_handler(CallbackQueryHandler(view_cb,r'^view:\d+$'));app.add_handler(CallbackQueryHandler(cat_cb,r'^cat:.+$'));app.add_handler(CallbackQueryHandler(icat_cb,r'^icat:.+$'));app.add_handler(CallbackQueryHandler(icats_cb,r'^icats$'))
  app.add_handler(CommandHandler('start',start));app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,router));return app
 
